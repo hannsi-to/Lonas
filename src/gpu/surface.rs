@@ -3,72 +3,11 @@
 use crate::config::{AntiAliasing, MotionVectorFormat, PresentMode};
 use crate::error::LonasError;
 use crate::render::antialiasing::FrameTargets;
+use crate::slots::SlotId;
 
-// 番号と世代。remove_surface の後に番号が再利用されても、古い ID と区別できる（§11 複数ウィンドウ）
+// 発行元の GpuContext・番号・世代。remove_surface の後に番号が再利用されても、古い ID と区別できる（§11 複数ウィンドウ）
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct SurfaceId {
-    pub(crate) index: u32,
-    pub(crate) generation: u32,
-}
-
-struct Slot<T> {
-    generation: u32,
-    state: Option<T>,
-}
-
-// SurfaceId の番号ごとの状態。remove_surface で空いた番号は、世代を進めて再利用する
-// GPU なしでテストできるよう、中身の型を引数にする
-pub(crate) struct SurfaceSlots<T = SurfaceState> {
-    slots: Vec<Slot<T>>,
-    free: Vec<u32>,
-}
-
-impl<T> Default for SurfaceSlots<T> {
-    fn default() -> Self {
-        Self { slots: Vec::new(), free: Vec::new() }
-    }
-}
-
-impl<T> SurfaceSlots<T> {
-    pub(crate) fn insert(&mut self, state: T) -> SurfaceId {
-        match self.free.pop() {
-            Some(index) => {
-                let slot = &mut self.slots[index as usize];
-                slot.state = Some(state);
-
-                SurfaceId { index, generation: slot.generation }
-            }
-            None => {
-                self.slots.push(Slot { generation: 0, state: Some(state) });
-
-                SurfaceId { index: (self.slots.len() - 1) as u32, generation: 0 }
-            }
-        }
-    }
-
-    // 存在しない、または削除済みの ID なら None
-    pub(crate) fn get(&self, id: SurfaceId) -> Option<&T> {
-        self.slots.get(id.index as usize).filter(|slot| slot.generation == id.generation)?.state.as_ref()
-    }
-
-    pub(crate) fn get_mut(&mut self, id: SurfaceId) -> Option<&mut T> {
-        self.slots.get_mut(id.index as usize).filter(|slot| slot.generation == id.generation)?.state.as_mut()
-    }
-
-    pub(crate) fn remove(&mut self, id: SurfaceId) -> Option<T> {
-        let slot = self.slots.get_mut(id.index as usize).filter(|slot| slot.generation == id.generation)?;
-        let state = slot.state.take()?;
-
-        slot.generation = slot.generation.wrapping_add(1);
-        self.free.push(id.index);
-
-        Some(state)
-    }
-
-    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
-        self.slots.iter_mut().filter_map(|slot| slot.state.as_mut())
-    }
-}
+pub struct SurfaceId(pub(crate) SlotId);
 
 enum Target {
     Window {
@@ -384,36 +323,5 @@ mod tests {
             resolve_present_mode(PresentMode::Immediate, &supported),
             Err(LonasError::UnsupportedPresentMode(PresentMode::Immediate)),
         ));
-    }
-
-    #[test]
-    fn removed_id_is_rejected_after_reuse() {
-        let mut slots = SurfaceSlots::default();
-        let first = slots.insert("a");
-        let second = slots.insert("b");
-
-        assert_eq!(slots.remove(first), Some("a"));
-        assert_eq!(slots.get(first), None);
-        // 2 回目の削除は何もしない
-        assert_eq!(slots.remove(first), None);
-
-        // 空いた番号を再利用しても、古い ID では取れない
-        let third = slots.insert("c");
-        assert_eq!(third.index, first.index);
-        assert_ne!(third, first);
-        assert_eq!(slots.get(first), None);
-        assert_eq!(slots.get(third), Some(&"c"));
-        assert_eq!(slots.get(second), Some(&"b"));
-        assert_eq!(slots.iter_mut().count(), 2);
-    }
-
-    #[test]
-    fn unknown_id_is_rejected() {
-        let mut slots = SurfaceSlots::default();
-        slots.insert(0);
-
-        assert_eq!(slots.get(SurfaceId { index: 1, generation: 0 }), None);
-        assert_eq!(slots.get(SurfaceId { index: 0, generation: 1 }), None);
-        assert_eq!(slots.remove(SurfaceId { index: 1, generation: 0 }), None);
     }
 }

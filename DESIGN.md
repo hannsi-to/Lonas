@@ -953,7 +953,7 @@ gpu.end_frame(&mut resource_manager, &mut [
 | `uniform()` に渡した型の大きさがシェーダーの uniform の要素と違う、またはシェーダーに uniform の配列がない | `end_frame` で panic（§11 uniform） |
 | 別の `ResourceManager` の `ShaderId` / `TextureId` を使う、または `Object*` の ID と別の `ResourceManager` を `end_frame` に渡す | `end_frame` で panic（§11） |
 | 同じサーフェスを `end_frame` の `SurfaceDraw` に 2 回以上渡す | `end_frame` で panic（§11 複数ウィンドウ） |
-| 取り除いた、または存在しない `SurfaceId` を渡す | その関数（`end_frame` を含む）で panic（§11 複数ウィンドウ） |
+| 別の `GpuContext` の、または取り除いた `SurfaceId` を渡す | その関数（`end_frame` を含む）で panic（§11 複数ウィンドウ） |
 | 存在しない `SurfaceId` を `resize` / `set_present_mode` / `set_anti_aliasing` / `end_frame` などに渡す | その関数で panic |
 | `index()` も `topology()` も呼ばずに `end` | `Object*::end` で panic（§10） |
 | `DrawManager*` に積んだのに `end_frame` に渡さなかった | 次のフレームでその `DrawManager*` に `Object*::end` が呼ばれた時点で panic（前のフレームのコマンドが残っている） |
@@ -1914,8 +1914,8 @@ gpu.set_anti_aliasing(main_surface, AntiAliasing::Msaa { sample_count: 4 })?;
 
 **決定：`remove_surface(surface)` でサーフェスを取り除く。**ウィンドウを閉じるときに呼ぶ。`new` / `add_surface` で渡したウィンドウ（winit なら `Arc<Window>`）は、ここで手放す
 
-- `SurfaceId` は番号と世代を持つ。取り除いた番号は次の `add_surface` で再利用するが、世代を進めるため古い `SurfaceId` とは区別できる（§11 ID と同じ考え方）
-- 取り除いた、または存在しない `SurfaceId` を `resize` などの関数や `end_frame` に渡したら panic（§9 誤用時は panic）。`end_frame` は、GPU の処理を始める前にすべての `SurfaceId` を確かめる
+- `SurfaceId` は発行元の `GpuContext`・番号・世代を持つ。取り除いた番号は次の `add_surface` で再利用するが、世代を進めるため古い `SurfaceId` とは区別できる（§11 ID と同じ考え方。`ShaderId` / `TextureId` と同じ表を使う）
+- 別の `GpuContext` の、または取り除いた `SurfaceId` を `resize` などの関数や `end_frame` に渡したら panic（§9 誤用時は panic）。2 つは別の文言で知らせる。`end_frame` は、GPU の処理を始める前にすべての `SurfaceId` を確かめる
 - フレーム中に呼んでもよい。そのフレームの `end_frame` に、取り除いた `SurfaceId` を渡さなければよい
 - 最初のサーフェスを取り除いても、`GpuContext` はそのまま使える。ただしアダプターは最初のサーフェスに合わせて選んでいるため、後から足すサーフェスが別の GPU につながったウィンドウだと `add_surface` が `Err` になることがある
 - テスト用のウィンドウなしの描画先も同じ表に入れ、本番と同じ検査を通す（テストのときだけ存在しない `SurfaceId` を飛ばす、という分岐は持たない）
@@ -2068,3 +2068,4 @@ gpu.set_anti_aliasing(surface_id, AntiAliasing::Taa)?;
 - 対応するには、`end_frame` を `Result` にするか、失われたことを問い合わせる関数を足すなどの API の変更が要る
 - 復旧するには、シェーダー・アトラス・ヒープなどの GPU 上のリソースをすべて作り直す必要がある（`Object*` の CPU 側の写し（§4）から再転送できるが、`GpuContext` が `Object*` を知らない）
 - 決まるまでは wgpu の既定の挙動（panic など）のままとする
+- 喪失を知るには `Device::set_device_lost_callback` を使う。`end_frame` で呼んでいる `device.poll` の失敗（wgpu 30 では `Timeout` / `WrongSubmissionIndex`）は待つ場合のもので、喪失は返さない。今は失敗したらログに出すだけにしている

@@ -1,4 +1,5 @@
-// 番号を再利用し、世代で古い ID と区別する表（§11 ID）
+// 番号を再利用し、世代で古い ID と区別する表（§11 ID）。owner で発行元も区別する
+// ResourceManager の ShaderId / TextureId と、GpuContext の SurfaceId が使う
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct SlotId {
@@ -61,10 +62,65 @@ impl<T> Slots<T> {
         self.slots[position].value.as_mut()
     }
 
+    // 発行元が違う ID か。違う場合の panic の文言を分けるために使う
+    pub(crate) fn owns(&self, id: SlotId) -> bool {
+        id.owner == self.owner
+    }
+
+    #[cfg(test)]
+    pub(crate) fn owner(&self) -> u32 {
+        self.owner
+    }
+
+    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        self.slots.iter_mut().filter_map(|slot| slot.value.as_mut())
+    }
+
     fn position(&self, id: SlotId) -> Option<usize> {
         let position = id.index.checked_sub(self.first_index)? as usize;
         let slot = self.slots.get(position)?;
 
         (id.owner == self.owner && slot.generation == id.generation).then_some(position)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn removed_id_is_rejected_after_reuse() {
+        let mut slots = Slots::new(0, 0);
+        let first = slots.insert("a");
+        let second = slots.insert("b");
+
+        assert_eq!(slots.remove(first), Some("a"));
+        assert_eq!(slots.get(first), None);
+        // 2 回目の削除は何もしない
+        assert_eq!(slots.remove(first), None);
+
+        // 空いた番号を再利用しても、古い ID では取れない
+        let third = slots.insert("c");
+        assert_eq!(third.index, first.index);
+        assert_ne!(third, first);
+        assert_eq!(slots.get(first), None);
+        assert_eq!(slots.get(third), Some(&"c"));
+        assert_eq!(slots.get(second), Some(&"b"));
+        assert_eq!(slots.iter_mut().count(), 2);
+    }
+
+    #[test]
+    fn other_owner_is_rejected() {
+        let mut slots = Slots::new(0, 0);
+        let mut other = Slots::new(1, 0);
+        let id = slots.insert("a");
+        let other_id = other.insert("b");
+
+        // 番号と世代が同じでも、発行元が違えば取れない
+        assert_eq!((other_id.index, other_id.generation), (id.index, id.generation));
+        assert!(!slots.owns(other_id));
+        assert_eq!(slots.get(other_id), None);
+        assert_eq!(slots.remove(other_id), None);
+        assert_eq!(slots.get(id), Some(&"a"));
     }
 }

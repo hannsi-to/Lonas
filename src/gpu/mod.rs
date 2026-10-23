@@ -7,7 +7,7 @@ pub(crate) mod heap;
 mod surface;
 
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
@@ -17,11 +17,12 @@ use crate::math::Vector2f;
 use crate::resource::ResourceManager;
 use crate::draw::{Dimension, DrawManagerCore};
 use crate::render::{self, Renderer, TargetFormat};
+use crate::slots::Slots;
 use crate::{color::Color, memory::ManagerId};
 use frame::FrameClock;
 use heap::Heap;
 pub use surface::SurfaceId;
-use surface::{SurfaceSlots, SurfaceState};
+use surface::SurfaceState;
 
 // end_frame に 2D / 3D の DrawManager* を混ぜて渡すためのトレイト（§9）。DrawManager2D / DrawManager3D が実装する
 pub trait DrawManager: sealed::Sealed {}
@@ -45,13 +46,16 @@ pub struct SurfaceDraw<'a, 'b> {
     pub draw_managers: &'a mut [&'b mut dyn DrawManager],
 }
 
+// SurfaceId の発行元を区別するための番号（ResourceManager と同じ考え方、§11 ID）
+static NEXT_GPU_CONTEXT_ID: AtomicU32 = AtomicU32::new(0);
+
 pub struct GpuContext {
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: LonasConfig,
-    surfaces: SurfaceSlots,
+    surfaces: Slots<SurfaceState>,
     heap: Heap,
     renderer: Renderer,
     frame: FrameClock,
@@ -180,13 +184,15 @@ impl GpuContext {
         let heap = Heap::new(&config);
         let renderer = Renderer::new(&device, &queue, &config);
 
+        let id = NEXT_GPU_CONTEXT_ID.fetch_add(1, Ordering::Relaxed);
+
         Ok(Self {
             instance,
             adapter,
             device,
             queue,
             config,
-            surfaces: SurfaceSlots::default(),
+            surfaces: Slots::new(id, 0),
             heap,
             renderer,
             frame: FrameClock::new(),
@@ -205,13 +211,14 @@ impl GpuContext {
         let state =
             SurfaceState::new(surface, &self.adapter, width, height, self.config.initial_present_mode, anti_aliasing)?;
 
-        Ok(self.surfaces.insert(state))
+        Ok(SurfaceId(self.surfaces.insert(state)))
     }
 
     // サーフェスを取り除き、new / add_surface で渡したウィンドウを手放す（§11 複数ウィンドウ）
     // 以降、その SurfaceId を渡すと panic。番号は再利用されるが、世代で古い ID と区別する
     pub fn remove_surface(&mut self, surface: SurfaceId) {
-        self.surfaces.remove(surface).expect("存在しない、または削除済みの SurfaceId です");
+        self.check_surface(surface);
+        self.surfaces.remove(surface.0);
     }
 
     // 大きさを記録するだけにし、次の begin_frame で反映する（§11 深度バッファのリサイズ時）
@@ -263,9 +270,9 @@ impl GpuContext {
 
         let mut seen = HashSet::new();
 
-        // 存在しない SurfaceId は、GPU の処理を始める前に panic する（§9 誤用時は panic）
+        // 別の GpuContext の、または削除済みの SurfaceId は、GPU の処理を始める前に panic する（§9 誤用時は panic）
         for draw in surfaces.iter() {
-            assert!(self.surfaces.get(draw.surface).is_some(), "存在しない、または削除済みの SurfaceId が end_frame に渡されました");
+            self.check_surface(draw.surface);
             assert!(
                 seen.insert(draw.surface),
                 "同じサーフェスが end_frame に 2 回以上渡されました。1 つの SurfaceDraw の draw_managers に並べてください",
@@ -280,7 +287,11 @@ impl GpuContext {
                 surfaces.iter_mut().flat_map(|draw| draw.draw_managers.iter_mut().map(|manager| manager.core())).collect();
 
             // 1. 前のフレームの後片付け：map し直しが終わった staging バッファを空きに戻す
-            let _ = self.device.poll(wgpu::PollType::Poll);
+            // wgpu 30 の poll の失敗（Timeout / WrongSubmissionIndex）は待つ場合のもので、Poll では起きないはず。起きたら知らせる
+            // デバイスの喪失はここでは分からない（§12 デバイスの喪失）
+            if let Err(error) = self.device.poll(wgpu::PollType::Poll) {
+                log::warn!("device.poll が失敗しました: {error}");
+            }
 
             for manager in managers.iter_mut() {
                 manager.staging.reclaim();
@@ -341,7 +352,7 @@ impl GpuContext {
 
         for (draw, per_surface) in surfaces.iter_mut().zip(&prepared) {
             // end_frame の最初に確かめたため、必ずある
-            let surface = self.surfaces.get_mut(draw.surface).expect("存在しない SurfaceId です");
+            let surface = self.surfaces.get_mut(draw.surface.0).expect("存在しない SurfaceId です");
             let Some(acquired) = surface.acquire() else { continue };
             let recreated = surface.prepare_targets(&self.device, motion_format);
             let history_valid = !recreated && !surface.history_invalidated;
@@ -444,12 +455,20 @@ impl GpuContext {
         }
     }
 
+    // 別の GpuContext の ID と削除済みの ID を、別の文言で panic する（§9 誤用時は panic）
+    fn check_surface(&self, id: SurfaceId) {
+        assert!(self.surfaces.owns(id.0), "別の GpuContext の SurfaceId です");
+        assert!(self.surfaces.get(id.0).is_some(), "削除済みの SurfaceId です");
+    }
+
     fn surface(&self, id: SurfaceId) -> &SurfaceState {
-        self.surfaces.get(id).expect("存在しない、または削除済みの SurfaceId です")
+        self.check_surface(id);
+        self.surfaces.get(id.0).expect("check_surface で確かめた")
     }
 
     fn surface_mut(&mut self, id: SurfaceId) -> &mut SurfaceState {
-        self.surfaces.get_mut(id).expect("存在しない、または削除済みの SurfaceId です")
+        self.check_surface(id);
+        self.surfaces.get_mut(id.0).expect("check_surface で確かめた")
     }
 
     // ---- DrawManager* / Object* が使う ----
@@ -490,7 +509,13 @@ impl GpuContext {
     // ウィンドウのない描画先を足す。描いた画像を read_pixels で読み戻せる
     #[cfg(test)]
     pub(crate) fn add_offscreen(&mut self, width: u32, height: u32) -> SurfaceId {
-        self.surfaces.insert(SurfaceState::new_offscreen(&self.device, width, height))
+        SurfaceId(self.surfaces.insert(SurfaceState::new_offscreen(&self.device, width, height)))
+    }
+
+    // テストで、この GpuContext が発行した形の SurfaceId を作る
+    #[cfg(test)]
+    pub(crate) fn surface_id_for_test(&self, index: u32) -> SurfaceId {
+        SurfaceId(crate::slots::SlotId { owner: self.surfaces.owner(), index, generation: 0 })
     }
 
     #[cfg(test)]
@@ -540,8 +565,8 @@ fn to_wgpu_color(color: Color) -> wgpu::Color {
 }
 
 // 渡されたサーフェスのどれかが TAA を使うか
-fn surfaces_use_taa(surfaces: &SurfaceSlots, used: &HashSet<SurfaceId>) -> bool {
-    used.iter().any(|id| surfaces.get(*id).is_some_and(|surface| surface.anti_aliasing == AntiAliasing::Taa))
+fn surfaces_use_taa(surfaces: &Slots<SurfaceState>, used: &HashSet<SurfaceId>) -> bool {
+    used.iter().any(|id| surfaces.get(id.0).is_some_and(|surface| surface.anti_aliasing == AntiAliasing::Taa))
 }
 
 #[cfg(test)]
@@ -574,8 +599,10 @@ mod tests {
 
     // begin_frame / end_frame の誤用の panic は frame.rs のテストで確かめる（GPU を使わずに済むため）
 
-    fn panics(f: impl FnOnce()) -> bool {
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_err()
+    fn panic_message(f: impl FnOnce()) -> String {
+        let error = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).expect_err("panic しませんでした");
+
+        error.downcast_ref::<String>().cloned().or_else(|| error.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default()
     }
 
     fn draw(surface: SurfaceId) -> SurfaceDraw<'static, 'static> {
@@ -583,12 +610,18 @@ mod tests {
     }
 
     #[test]
-    fn unknown_surface_panics_in_end_frame() {
+    fn other_context_surface_panics() {
         let Some(mut gpu) = headless() else { return };
         let mut resources = ResourceManager::new();
+        let own = gpu.add_offscreen(4, 4);
+        // 番号と世代は同じで、発行元だけが違う ID（2 つ目の GpuContext はテストのロックで同時に作れないため、直接作る）
+        let other = SurfaceId(crate::slots::SlotId { owner: own.0.owner.wrapping_add(1), ..own.0 });
+
+        assert!(panic_message(|| { gpu.surface_size(other); }).contains("別の GpuContext"));
+        assert!(panic_message(|| gpu.remove_surface(other)).contains("別の GpuContext"));
 
         gpu.begin_frame();
-        assert!(panics(|| gpu.end_frame(&mut resources, &mut [draw(SurfaceId { index: 0, generation: 0 })])));
+        assert!(panic_message(|| gpu.end_frame(&mut resources, &mut [draw(other)])).contains("別の GpuContext"));
     }
 
     #[test]
@@ -598,12 +631,12 @@ mod tests {
         let old = gpu.add_offscreen(4, 4);
 
         gpu.remove_surface(old);
-        assert!(panics(|| { gpu.surface_size(old); }));
-        assert!(panics(|| gpu.remove_surface(old)));
+        assert!(panic_message(|| { gpu.surface_size(old); }).contains("削除済み"));
+        assert!(panic_message(|| gpu.remove_surface(old)).contains("削除済み"));
 
         // 番号は再利用されるが、古い ID は使えない
         let new = gpu.add_offscreen(8, 8);
-        assert_eq!(new.index, old.index);
+        assert_eq!(new.0.index, old.0.index);
         assert_eq!(gpu.surface_size(new), Vector2f::new(8.0, 8.0));
 
         gpu.begin_frame();
@@ -611,7 +644,7 @@ mod tests {
         assert!(gpu.read_pixels(new).iter().all(|&pixel| pixel == [255, 0, 0, 255]));
 
         gpu.begin_frame();
-        assert!(panics(|| gpu.end_frame(&mut resources, &mut [draw(old)])));
+        assert!(panic_message(|| gpu.end_frame(&mut resources, &mut [draw(old)])).contains("削除済み"));
     }
 
     #[test]

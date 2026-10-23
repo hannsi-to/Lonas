@@ -3,14 +3,13 @@
 #![allow(dead_code)] // GpuContext 向けの関数は段階 4〜7 で使う
 
 pub(crate) mod shader;
-mod slots;
 mod texture;
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::error::LonasError;
 use shader::{CheckedShader, ShaderReflection, check_wgsl};
-use slots::{SlotId, Slots};
+use crate::slots::{SlotId, Slots};
 pub(crate) use texture::TextureData;
 
 // ResourceManager ごとの識別子。別の ResourceManager の ID を見分ける（§11 ID）
