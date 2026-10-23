@@ -7,13 +7,19 @@ use crate::config::LonasConfig;
 use crate::config::tests::sample_config;
 use crate::draw::{Camera2D, Camera3D, HeapRequest, SpaceKind};
 use crate::vertex::VertexLayout;
-use crate::gpu::{SurfaceDraw, heap::Heap};
+use crate::gpu::{SurfaceDraw, SurfaceId, heap::Heap};
 use crate::math::Quaternion;
 use crate::resource::ResourceManager;
 
+// headless() が最初に足す描画先。end_frame に渡す
+const SURFACE: SurfaceId = SurfaceId { index: 0, generation: 0 };
+
 fn headless(config: LonasConfig) -> Option<GpuContext> {
     match GpuContext::new_headless(config) {
-        Ok(gpu) => Some(gpu),
+        Ok(mut gpu) => {
+            assert_eq!(gpu.add_offscreen(4, 4), SURFACE);
+            Some(gpu)
+        }
         Err(error) => {
             eprintln!("GPU を使うテストを飛ばします: {error}");
             None
@@ -37,7 +43,7 @@ fn camera_3d() -> Camera3D {
 }
 
 fn end_frame(gpu: &mut GpuContext, resources: &mut ResourceManager, manager: &mut DrawManager2D) {
-    gpu.end_frame(resources, &mut [SurfaceDraw { surface: crate::gpu::SurfaceId(0), clear_color: None, draw_managers: &mut [manager] }]);
+    gpu.end_frame(resources, &mut [SurfaceDraw { surface: SURFACE, clear_color: None, draw_managers: &mut [manager] }]);
 }
 
 fn triangle(object: &mut Object2D, x: f32) {
@@ -451,7 +457,7 @@ fn draw_manager_3d_accepts_object_3d() {
     object.end(&mut manager);
     assert_eq!(object.core.index_values().len(), 6);
     assert_eq!(manager.core.draw_commands[0].instance_count, 1);
-    gpu.end_frame(&mut resources, &mut [SurfaceDraw { surface: crate::gpu::SurfaceId(0), clear_color: None, draw_managers: &mut [&mut manager] }]);
+    gpu.end_frame(&mut resources, &mut [SurfaceDraw { surface: SURFACE, clear_color: None, draw_managers: &mut [&mut manager] }]);
 
     object.remove_instance(id);
     gpu.begin_frame();

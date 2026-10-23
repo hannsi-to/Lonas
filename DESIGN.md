@@ -953,6 +953,7 @@ gpu.end_frame(&mut resource_manager, &mut [
 | `uniform()` に渡した型の大きさがシェーダーの uniform の要素と違う、またはシェーダーに uniform の配列がない | `end_frame` で panic（§11 uniform） |
 | 別の `ResourceManager` の `ShaderId` / `TextureId` を使う、または `Object*` の ID と別の `ResourceManager` を `end_frame` に渡す | `end_frame` で panic（§11） |
 | 同じサーフェスを `end_frame` の `SurfaceDraw` に 2 回以上渡す | `end_frame` で panic（§11 複数ウィンドウ） |
+| 取り除いた、または存在しない `SurfaceId` を渡す | その関数（`end_frame` を含む）で panic（§11 複数ウィンドウ） |
 | 存在しない `SurfaceId` を `resize` / `set_present_mode` / `set_anti_aliasing` / `end_frame` などに渡す | その関数で panic |
 | `index()` も `topology()` も呼ばずに `end` | `Object*::end` で panic（§10） |
 | `DrawManager*` に積んだのに `end_frame` に渡さなかった | 次のフレームでその `DrawManager*` に `Object*::end` が呼ばれた時点で panic（前のフレームのコマンドが残っている） |
@@ -1910,6 +1911,14 @@ gpu.set_anti_aliasing(main_surface, AntiAliasing::Msaa { sample_count: 4 })?;
 - 同じ `DrawManager*` を複数のサーフェスに渡すことは、`&mut` を同時に 2 つ作れないため **コンパイルエラー** になる
 - ヒープ（§6）・`ResourceManager`・パイプラインはサーフェス間で共有する
 - 描画先の取得・`present`・深度バッファはサーフェスごと
+
+**決定：`remove_surface(surface)` でサーフェスを取り除く。**ウィンドウを閉じるときに呼ぶ。`new` / `add_surface` で渡したウィンドウ（winit なら `Arc<Window>`）は、ここで手放す
+
+- `SurfaceId` は番号と世代を持つ。取り除いた番号は次の `add_surface` で再利用するが、世代を進めるため古い `SurfaceId` とは区別できる（§11 ID と同じ考え方）
+- 取り除いた、または存在しない `SurfaceId` を `resize` などの関数や `end_frame` に渡したら panic（§9 誤用時は panic）。`end_frame` は、GPU の処理を始める前にすべての `SurfaceId` を確かめる
+- フレーム中に呼んでもよい。そのフレームの `end_frame` に、取り除いた `SurfaceId` を渡さなければよい
+- 最初のサーフェスを取り除いても、`GpuContext` はそのまま使える。ただしアダプターは最初のサーフェスに合わせて選んでいるため、後から足すサーフェスが別の GPU につながったウィンドウだと `add_surface` が `Err` になることがある
+- テスト用のウィンドウなしの描画先も同じ表に入れ、本番と同じ検査を通す（テストのときだけ存在しない `SurfaceId` を飛ばす、という分岐は持たない）
 
 ### スレッド
 
