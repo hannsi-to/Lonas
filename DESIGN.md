@@ -145,7 +145,8 @@ rock.end(&mut dm3d);  // そのフレームで begin していなければ panic
 | `blend` / `cull_mode` / `camera` / `layer` / `topology`（`index()` 使用時）が変わった | 設定の比較 | 転送なし。積む描画コマンドの内容（パイプラインのキー・カメラ・描画順）が変わるだけ |
 | uniform の値が変わった | バイト列の比較（§11 uniform） | その `Object*` の要素だけを転送 |
 | インスタンスの追加・更新・削除 | `InstanceSlots` の変更の範囲（§7） | 変わったスロットの最小〜最大の範囲だけを転送。容量を超えたら確保し直してすべてを転送 |
-| 使っている `ShaderId` / `TextureId` / `CameraId` が無効 | 発行元の記録と比べる | **panic**（§11） |
+| 使っている `CameraId` が無効 | `DrawManager*` の記録と比べる | **panic**（§11） |
+| 使っている `ShaderId` / `TextureId` が無効 | `end` では判定できない（`Object*::end` は `ResourceManager` を受け取らない） | `end_frame` で `ResourceManager` と比べて **panic**（§11 登録解除） |
 
 - 判定はすべて `Object*` の中で完結し、`GpuContext` には問い合わせない。GC の回収だけは `DrawManager*` に問い合わせる
 - 描画コマンドは変化の有無に関わらず毎フレーム積む（`end_frame` で実行した後に消えるため、§9）
@@ -902,7 +903,7 @@ gpu.end_frame(&mut resource_manager, &mut [
 | Static の `Object*` で頂点・インデックスの数が変わる（`topology` の変更による自動のインデックスを含む） | `Object*::end` で panic（§2・§6） |
 | 削除済みの `CameraId` を使う | panic（§11） |
 | 存在しない / 別の `Object*` の `InstanceId` を `update_instance` / `remove_instance` に渡す | panic（§11） |
-| 登録解除済みの `ShaderId` / `TextureId` を使う | `Object*::end` で panic（§11） |
+| 登録解除済みの `ShaderId` / `TextureId` を使う | `end_frame` で panic（§11 登録解除） |
 | `uniform()` に渡した型の大きさがシェーダーの uniform の要素と違う、またはシェーダーに uniform の配列がない | `Object*::end` で panic（§11 uniform） |
 | 別の `ResourceManager` の `ShaderId` / `TextureId` を使う、または `Object*` の ID と別の `ResourceManager` を `end_frame` に渡す | `end_frame` で panic（§11） |
 | 同じサーフェスを `end_frame` の `SurfaceDraw` に 2 回以上渡す | `end_frame` で panic（§11 複数ウィンドウ） |
@@ -1350,7 +1351,9 @@ gpu.end_frame(&mut resource_manager, &mut [ /* SurfaceDraw ... */ ]);
 
 #### 登録解除
 
-**決定：`unregister_*` を呼んだ時点で ID を無効にする。無効な ID を持つ `Object*` が次に `end` されたら panic。**
+**決定：`unregister_*` を呼んだ時点で ID を無効にする。無効な ID を持つ `Object*` を描こうとしたら、`end_frame` で panic。**
+
+- `Object*::end` は `ResourceManager` を受け取らないため、`end` の時点では判定できない。`end_frame` が積まれた描画コマンドの ID を `ResourceManager` と比べる
 
 - 削除済みの `CameraId` と同じ扱い（§11 Camera）
 - GPU 上の実体は次の `end_frame` で破棄する。wgpu は送信済みのコマンドが使っているリソースを実行が終わるまで生かしておくため、すぐに破棄しても前のフレームの描画とは競合しない

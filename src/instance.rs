@@ -87,6 +87,10 @@ pub(crate) struct GpuInstance3D {
     pub _pad: u32,
 }
 
+// Rust 側の並び方が WGSL の STRUCTS と食い違えばコンパイルエラーにする
+const _: () = assert!(size_of::<GpuInstance2D>() == crate::wgsl::INSTANCE_2D_SIZE as usize);
+const _: () = assert!(size_of::<GpuInstance3D>() == crate::wgsl::INSTANCE_3D_SIZE as usize);
+
 impl Instance2D {
     // texture_slot / uniform_index は Lonas が付け足す（§11 UV の変換・uniform）
     #[allow(dead_code)] // 段階 5（インスタンスの転送）で使う

@@ -94,13 +94,13 @@ src/
 
 **目的**：GPU に触れない登録・解除・検査を完成させる（§11 ResourceManager）。
 
-- [ ] `ShaderId` / `TextureId`：発行元の識別子・番号・世代。`TextureId` の番号は 1 から（§11 ID・texture() を呼ばなかった Object*）
-- [ ] `register_shader`：naga で WGSL を検査し、失敗なら `Err(InvalidShader)`
-- [ ] シェーダーの解析結果を保持する：`BindingConfig` の位置にある変数の型の大きさを、段階 6 で検査できる形で取り出せるようにする（§11 シェーダーとの約束事・uniform の型の検査）
-- [ ] `wgsl::STRUCTS`：Instance2D / Instance3D / Camera / TextureRect の定義（§11 シェーダーとの約束事）
-- [ ] `register_texture`（`image` feature）・`register_texture_rgba`（大きさの不一致で panic）
-- [ ] `unregister_*`：ID を即座に無効化し、解除の要求を積む
-- [ ] 未反映の登録・解除を取り出す関数（段階 4 以降の `end_frame` が使う）
+- [x] `ShaderId` / `TextureId`：発行元の識別子・番号・世代。`TextureId` の番号は 1 から（§11 ID・texture() を呼ばなかった Object*）
+- [x] `register_shader`：naga で WGSL を検査し、失敗なら `Err(InvalidShader)`
+- [x] シェーダーの解析結果を保持する：`BindingConfig` の位置にある変数の型の大きさを、段階 6 で検査できる形で取り出せるようにする（§11 シェーダーとの約束事・uniform の型の検査）
+- [x] `wgsl::STRUCTS`：Instance2D / Instance3D / Camera / TextureRect の定義（§11 シェーダーとの約束事）
+- [x] `register_texture`（`image` feature）・`register_texture_rgba`（大きさの不一致で panic）
+- [x] `unregister_*`：ID を即座に無効化し、解除の要求を積む
+- [x] 未反映の登録・解除を取り出す関数（段階 4 以降の `end_frame` が使う）
 
 **終わりの条件**
 - 誤った WGSL が `Err` になり、正しい WGSL と `STRUCTS` をつないだものが通るテスト
@@ -114,7 +114,7 @@ src/
 
 **目的**：wgpu を初期化し、何も描かないフレームを正しく回す（§8・§9）。
 
-- [ ] **最初に wgpu のバージョンを決める。**そのバージョンでの `MULTI_DRAW_INDIRECT` と `INDIRECT_FIRST_INSTANCE` の表し方（`Features` / `DownlevelFlags`）を確認する（§8）
+- [x] **最初に wgpu のバージョンを決める。**（段階 3 で naga のバージョンを揃えるために 30 系に決定。gueiz と同じ）そのバージョンでの `MULTI_DRAW_INDIRECT` と `INDIRECT_FIRST_INSTANCE` の表し方（`Features` / `DownlevelFlags`）を確認する（§8）
 - [ ] `LonasConfig` の値の検査（§3・§11 の各「値の検査」）。不正なら panic、アダプターの上限を超えるなら `Err`
 - [ ] 必須の機能の判定：`VERTEX_STORAGE`・`COMPUTE_SHADERS`・`INDIRECT_EXECUTION`・`INDIRECT_FIRST_INSTANCE`・`MULTI_DRAW_INDIRECT`（§11 環境の判定）
 - [ ] `GpuContext::new` / `add_surface`：sRGB のフォーマットを選ぶ（§11 サーフェスのフォーマット）、Present mode を選ぶ（§8）
