@@ -220,6 +220,11 @@ pub struct LonasConfig {
     /// GpuContext::new と add_surface で作るすべてのサーフェスがこの値で始まる
     /// 実行中は set_anti_aliasing でサーフェスごとに変更できる
     pub initial_anti_aliasing: AntiAliasing,
+    /// 使う GPU の API（§8）
+    pub backend: Backend,
+    /// 各サーフェスの最初の Present mode（§8）
+    /// 実行中は set_present_mode でサーフェスごとに変更できる
+    pub initial_present_mode: PresentMode,
     /// TAA の細かい値（§11 参照）
     pub taa: TaaConfig,
     /// TextureAtlas の大きさ・レイヤー数など（§11 参照）
@@ -668,9 +673,9 @@ struct DrawManagerCore {
 ```rust
 // 決定（§11）
 impl Object2D { // Object3D も同じ（Instance3D を受け取る）
-    pub fn add_instance(&mut self, instance: Instance2D) -> InstanceId;
-    pub fn update_instance(&mut self, id: InstanceId, instance: Instance2D);
-    pub fn remove_instance(&mut self, id: InstanceId);
+    pub fn add_instance(&mut self, instance: Instance2D) -> InstanceId<Instance2D>;
+    pub fn update_instance(&mut self, id: InstanceId<Instance2D>, instance: Instance2D);
+    pub fn remove_instance(&mut self, id: InstanceId<Instance2D>);
 }
 ```
 
@@ -698,10 +703,11 @@ impl Object2D { // Object3D も同じ（Instance3D を受け取る）
 **決定：インスタンスはスロットの配列で持ち、削除したスロットは非表示にして再利用する。インスタンスは移動しない。**
 
 ```rust
-pub struct InstanceId {
+pub struct InstanceId<I> {         // I = Instance2D / Instance3D
     slot: u32,
     generation: u32,
-    // 発行元の Object* の識別子も持ち、別の Object* の InstanceId を検知する（§11）
+    owner: ObjectId,                  // 発行元の Object* の識別子。別の Object* の InstanceId を検知する（§11）
+    _marker: PhantomData<fn() -> I>,  // I の性質によらず Copy / Send にするため fn() -> I
 }
 
 struct InstanceSlots<I> {
@@ -731,6 +737,35 @@ struct InstanceSlots<I> {
 - 頂点データの変換は `bytemuck`、ログは `log`
 - バックエンド選択は gueiz の `renderer.rs` と同様に `Auto / Vulkan / DirectX12 / Metal / OpenGl` から指定可能にする
 - Present mode も gueiz の `SurfacePresentMode` と同様に指定可能にする
+- **決定：バックエンドは `LonasConfig::backend` で指定する。Present mode はサーフェスごとの値とし、最初の値を `LonasConfig::initial_present_mode`、以降は `set_present_mode` で変更する。**
+
+```rust
+pub enum Backend {
+    Auto, // wgpu が環境に合わせて選ぶ
+    Vulkan,
+    DirectX12,
+    Metal,
+    OpenGl,
+}
+
+pub enum PresentMode {
+    AutoVsync,   // 垂直同期あり。使えるものを Lonas が選ぶ（FifoRelaxed → Fifo）
+    AutoNoVsync, // 垂直同期なし。使えるものを Lonas が選ぶ（Immediate → Mailbox → Fifo）
+    Fifo,
+    FifoRelaxed,
+    Mailbox,
+    Immediate,
+}
+
+impl GpuContext {
+    pub fn set_present_mode(&mut self, surface: SurfaceId, mode: PresentMode) -> Result<(), LonasError>;
+}
+```
+
+  - バックエンドは `GpuContext` 全体で 1 つのため設定に置く。Present mode はサーフェスごとに作るため、アンチエイリアス（§11）と同じ形にする。設定画面で垂直同期を切り替えるような使い方に対応できる
+  - 指定したバックエンドのアダプターがなければ `Err(AdapterNotFound)`。`Fifo` 以外の Present mode にサーフェスが対応していなければ `Err(UnsupportedPresentMode)`（`Auto*` は必ず何かを選べるため `Err` にならない）
+  - `set_present_mode` の反映は次の `begin_frame`（サーフェスの設定し直し）
+  - 却下案：Present mode も設定に固定する（垂直同期を切り替えるのに `GpuContext` の作り直しが必要になる）
 - **決定：WebGPU 環境は対象としない。**Compute Shader の有無などの環境の分岐は、ネイティブのバックエンド（Vulkan / DirectX12 / Metal / OpenGL）の間でのみ考える
 - **決定：頂点シェーダーで storage バッファを読めない環境（OpenGL ES 3.0、OpenGL 4.3 未満など）は対象としない。**
   - インスタンス（§11 Instance）・インスタンス番号のリスト（§10）・uniform（§11 uniform）をすべて storage バッファで渡し、ユーザーのシェーダーを環境によらず 1 つにするため
@@ -785,6 +820,7 @@ impl GpuContext {
     pub fn new(window: impl HasWindowHandle + HasDisplayHandle, config: LonasConfig) -> Result<(Self, SurfaceId), LonasError>;
     pub fn add_surface(&mut self, window: impl HasWindowHandle + HasDisplayHandle) -> Result<SurfaceId, LonasError>;
     pub fn resize(&mut self, surface: SurfaceId, width: u32, height: u32);
+    pub fn surface_size(&self, surface: SurfaceId) -> Vector2f; // resize で通知された大きさ（ピクセル）
     pub fn begin_frame(&mut self);
     pub fn end_frame(&mut self, resource_manager: &mut ResourceManager, surfaces: &mut [SurfaceDraw<'_, '_>]);
 }
@@ -1076,11 +1112,11 @@ end_frame（2D の DrawManager）
 
 ```rust
 impl Object3D {
-    pub fn bounding_sphere(&mut self, center: [f32; 3], radius: f32) -> &mut Self; // 任意
+    pub fn bounding_sphere(&mut self, center: Vector3f, radius: f32) -> &mut Self; // 任意
 }
 
 impl Object2D {
-    pub fn bounding_circle(&mut self, center: [f32; 2], radius: f32) -> &mut Self; // 任意。culling_2d が true のときに使う
+    pub fn bounding_circle(&mut self, center: Vector2f, radius: f32) -> &mut Self; // 任意。culling_2d が true のときに使う
 }
 ```
 
@@ -1169,7 +1205,6 @@ pub struct Camera2D {
     pub position: Vector2f,
     pub rotation: f32,
     pub zoom: f32,
-    pub viewport_size: Vector2f,
 }
 
 pub struct Camera3D {
@@ -1177,14 +1212,12 @@ pub struct Camera3D {
     pub rotation: Quaternion,
     pub projection_mode: ProjectionMode, // 透視投影 / 正射影
     pub fov_y: f32,
-    pub aspect_ratio: f32,
     pub near: f32,
     pub far: f32,
-    pub viewport_size: Vector2f,
 }
 
 impl Camera2D { // Camera3D も同じ
-    pub fn view_projection(&self) -> Matrix4f; // 現在の値から計算して返す
+    pub fn view_projection(&self, viewport_size: Vector2f) -> Matrix4f; // 現在の値と描く大きさから計算して返す
 }
 
 impl Camera3D {
@@ -1201,6 +1234,12 @@ impl Camera3D {
   - `end_frame` で各 `DrawManager*` のカメラごとに 1 フレーム 1 回計算して GPU に送る（§9）。TAA のずらし（ジッター）もここで加える
   - ユーザーが行列を必要とする場合（マウス位置からの逆変換など）は `view_projection()` で取得する。ジッターは含まない
   - 項目と行列が食い違う状態が起きない
+- **決定：カメラは描く大きさ（`viewport_size`）と縦横比（`aspect_ratio`）を持たない。`end_frame` で、そのカメラを描くサーフェスの大きさから求める。**
+  - 同じ `DrawManager*` でもフレームによって描くサーフェスが変わり得るため、大きさはカメラではなくサーフェスの値として扱う
+  - ユーザーはリサイズのときに `gpu.resize` だけを呼べばよい
+  - `view_projection()` は描く大きさを引数に取る。`gpu.surface_size(surface)` で取得した値を渡す
+  - シェーダーに渡す `Camera::viewport_size`（§11 シェーダーとの約束事）は、描くサーフェスの大きさ
+  - 却下案：`viewport_size: Option<Vector2f>` にし、`None` ならサーフェスに合わせる（画面の一部に描く用途に使えそうだが、大きさだけでは描く位置を指定できず、その機能は別に必要になる）
 - カメラの削除：**`remove_camera(id)` を用意する。**削除済みの `CameraId` を使った場合は **panic**
 
 ### Instance
@@ -1241,10 +1280,30 @@ pub enum Visibility {
 **決定：`add_instance` は `InstanceId` を返す（§7 の案を確定）。**`add_instance` だけはメソッドチェーンにならない。
 
 - 存在しない / 別の `Object*` の `InstanceId` を `update_instance` / `remove_instance` に渡した場合は **panic**
+- **決定：`InstanceId` はインスタンスの型を型引数に持つ（`InstanceId<Instance2D>` / `InstanceId<Instance3D>`）。**`Object2D` の ID を `Object3D` に渡すと **コンパイルエラー** になる
+  - 同じ型の別の `Object*` の ID（例：`Object2D` 同士）は型では区別できないため、これまでどおり `owner` で実行時に検査して panic する
+  - 却下案：寿命で `Object*` ごとに印を付ける（GhostCell と同じ手法。`Object*` をクロージャの外に出せなくなり、構造体に持たせられない）
+  - 却下案：ユーザーが印の型を付ける（`Object2D<Player>`）。同じ印の `Object*` 同士は区別できず実行時の検査が残るうえ、型の表記が長くなる。既定値付きの型引数（`Object2D<M = ()>`）で後から足せるため、今は入れない
 
 ### 数学型
 
 **決定：`Matrix4f` / `Vector2f` などの数学型は自前で作る。**外部の数学クレートに依存しない。
+
+**決定：作り方は次のとおり。**名前は一般的な数学クレート（glam など）に合わせ、使い慣れた書き方で書けるようにする。
+
+```rust
+Vector2f::new(x, y)        Vector2f::ZERO   Vector2f::ONE   Vector2f::from([x, y])
+Vector3f::new(x, y, z)     Vector3f::ZERO   Vector3f::ONE   Vector3f::from([x, y, z])
+Quaternion::IDENTITY       Quaternion::from_axis_angle(axis: Vector3f, radians: f32)
+Matrix4f::IDENTITY
+Matrix4f::from_translation(v: Vector3f)
+Matrix4f::from_rotation(q: Quaternion)
+Matrix4f::from_scale(v: Vector3f)
+Matrix4f::from_trs(translation: Vector3f, rotation: Quaternion, scale: Vector3f)
+```
+
+- 演算子（`+` / `-` / `*` など）や他の関数は実装時に必要なものを足す
+- 角度はすべてラジアン
 
 ### ResourceManager（シェーダー・テクスチャ）
 
@@ -1485,14 +1544,14 @@ pub struct BindingSlot {
 }
 
 pub struct BindingConfig {
-    pub camera: BindingSlot,
+    pub camera: BindingSlot,             // var<uniform> の Camera（§11 シェーダーとの約束事）
     pub instances: BindingSlot,
     pub instance_order: BindingSlot,     // インスタンス番号のリスト（§10）
     pub atlas_texture: BindingSlot,      // §11 TextureAtlas
     pub atlas_sampler: BindingSlot,
     pub texture_rects: BindingSlot,      // テクスチャの番号 → アトラス上の範囲の表（§11 TextureAtlas）
     pub uniform: BindingSlot,            // var<storage, read> の配列（§11 uniform）
-    pub previous_camera: BindingSlot,    // TAA（§11 アンチエイリアス）
+    pub previous_camera: BindingSlot,    // TAA（§11 アンチエイリアス）。前のフレームの Camera
     pub previous_instances: BindingSlot, // TAA
 }
 ```
@@ -1503,6 +1562,93 @@ pub struct BindingConfig {
   - `group` がアダプターの上限（`max_bind_groups`）以上 → `Err(LimitExceeded)`
 - TAA 用の 2 つは、TAA を使わない場合もシェーダーと番号を合わせるために指定する（TAA 以外のサーフェスでは前のフレームと同じ値を置く）
 - 却下案：グループは Lonas が 1 つに固定し、番号だけを指定する（更新の頻度ごとにグループを分けられない）
+
+### シェーダーとの約束事
+
+ユーザーが書くシェーダー（§10）と Lonas の間で、次の並び方を固定する。
+
+#### WGSL の struct の提供
+
+**決定：Lonas は下記の struct の WGSL の定義を文字列 `lonas::wgsl::STRUCTS` として公開する。ユーザーは自分の WGSL の先頭につなげて登録する。**
+
+```rust
+let src = format!("{}{}", lonas::wgsl::STRUCTS, MY_WGSL);
+let shader = resource_manager.register_shader(&src)?;
+```
+
+- バインディングの宣言（`@group` / `@binding`）は番号が `BindingConfig` 次第のため、ユーザーが書く
+- **決定：`end_frame` でシェーダーを作るとき、naga で各バインディングの型の大きさを検査し、下記と合わなければ panic する。**`BindingConfig` の位置にある変数の型（`instances` の配列の要素、`camera` の struct など）の大きさを見る。書き間違いを、表示が崩れる前に見つけられる
+- 却下案：DESIGN.md に並び方を書くだけにする（ユーザーが struct を書き間違えても表示が崩れるだけで、原因が分かりにくい）
+- 却下案：`register_shader` が自動で先頭につなげる（ユーザーの WGSL だけを読んでも定義の場所が分からず、naga のエラーの行番号もずれる。ユーザーが同じ名前を使うと衝突する）
+
+#### インスタンス
+
+**決定：GPU 上のインスタンスの並び方は次のとおり。**WGSL の storage バッファの決まり（`vec4` / `mat4x4` は 16 バイト、`vec2` は 8 バイトの境界）に合わせ、大きいものから並べて詰め物を最小にする。
+
+```wgsl
+struct Instance2D {          // 48 バイト
+    color: vec4<f32>,        //  0 線形の色（§11 色）
+    position: vec2<f32>,     // 16
+    scale: vec2<f32>,        // 24
+    rotation: f32,           // 32 ラジアン
+    visibility: u32,         // 36 1 = Visible、0 = Hidden
+    texture_slot: u32,       // 40 Lonas が付け足す（§11 UV の変換）
+    uniform_index: u32,      // 44 Lonas が付け足す（§11 uniform）
+}
+
+struct Instance3D {          // 96 バイト
+    transform: mat4x4<f32>,  //  0
+    color: vec4<f32>,        // 64 線形の色
+    visibility: u32,         // 80
+    texture_slot: u32,       // 84
+    uniform_index: u32,      // 88
+    _pad: u32,               // 92
+}
+
+struct TextureRect {         // 32 バイト（§11 UV の変換）
+    rect: vec4<f32>,         //  0 xy = 左上の UV、zw = 大きさの UV
+    layer: u32,              // 16
+}
+```
+
+- Rust 側の `Instance2D` / `Instance3D`（§11 Instance）とは別の並び方。Lonas が転送するときに詰め直す（色の線形への変換も同時に行う）
+- 前のフレームのインスタンス（`previous_instances`、TAA）も同じ並び方
+- インスタンス番号のリスト（`instance_order`）は `array<u32>`
+
+#### カメラ
+
+**決定：カメラは 2D / 3D 共通の struct とし、`var<uniform>` で渡す。**
+
+```wgsl
+struct Camera {                              // 224 バイト
+    view_projection: mat4x4<f32>,            //   0 ジッター込み。画面上の位置に使う
+    view_projection_no_jitter: mat4x4<f32>,  //  64 動きのベクトル用（TAA）
+    view: mat4x4<f32>,                       // 128 光の計算など
+    position: vec4<f32>,                     // 192 xyz。w = 0
+    viewport_size: vec2<f32>,                // 208 ピクセル
+    jitter: vec2<f32>,                       // 216 ピクセル。TAA 以外は 0
+}
+```
+
+- カメラは 1 回の DrawCall の中で変わらない（バッチングのキーに `CameraId` を含む、§10）ため、uniform で足りる
+- `DrawManager*` のすべてのカメラを 1 本の uniform バッファに並べ、動的オフセットで切り替える。1 つあたりの間隔は `min_uniform_buffer_offset_alignment`（多くの環境で 256 バイト）に切り上げる
+- 2D では `view` は 2D のカメラの変換、`position` は `(x, y, 0, 0)`
+- 前のフレームのカメラ（`previous_camera`、TAA）も同じ struct。動きのベクトルは、現在と前のフレームの `view_projection_no_jitter` で求める
+- 却下案：`view_projection` だけにする（光の計算にカメラの位置が要る場合や、TAA の動きのベクトルを正確に出す場合に、ユーザーが uniform で別に渡すことになる）
+
+#### 頂点
+
+**決定：頂点の要素の `@location` は要素ごとに固定する。**`VertexLayout`（§10）は要素を前から順に足していく形のため、どの `VertexLayout` でも連番になる。
+
+| 要素 | `@location` | 形式 | 含まれる `VertexLayout` |
+|---|---|---|---|
+| 位置 | 0 | `Float32x3`（`vec3<f32>`） | すべて |
+| 色 | 1 | `Float32x4`（`vec4<f32>`）。線形の色（§11 色） | `PositionColor` 以降 |
+| UV | 2 | `Float32x2`（`vec2<f32>`） | `PositionColorUv` 以降 |
+| 法線 | 3 | `Float32x3`（`vec3<f32>`） | `PositionColorUvNormal` |
+
+- 2D の頂点（`vertex(x, y)`、§11 2D の頂点の入力）も位置は `vec3<f32>` で、z は 0
+- 色は精度のため `f32` のまま送る（8 ビットに詰めると、線形の値では暗い色の階調が失われる）
 
 ### 2D の頂点の入力
 
@@ -1547,6 +1693,7 @@ pub enum LonasError {
     DeviceLost { reason: String },
     UnsupportedSurfaceFormat,          // sRGB のフォーマットに対応していない（§11 サーフェスのフォーマット）
     UnsupportedSampleCount { requested: u32, supported: Vec<u32> },
+    UnsupportedPresentMode(PresentMode),  // §8
     LimitExceeded { limit: &'static str, requested: u64, max: u64 }, // アトラスの大きさ・レイヤー数など
     // 登録時の入力（§11 ResourceManager）
     InvalidShader { message: String },  // naga の検査結果
@@ -1618,6 +1765,13 @@ impl Object2D { // Object3D も同じ
 ### 色
 
 **決定：`Color` は sRGB の値として受け取る。色の計算・ブレンドは常に線形で行う。**
+
+```rust
+Color::new(r, g, b, a)            // sRGB の 0.0〜1.0
+Color::rgb(r, g, b)               // a = 1.0
+Color::from_rgba8(255, 128, 0, 255)
+Color::WHITE   Color::BLACK   Color::TRANSPARENT
+```
 
 - 頂点の色（`vertex_color*`）・インスタンスの `Color`・`clear_color` は、転送するときに線形に変換する
 - テクスチャはアトラスが `Rgba8UnormSrgb` のため、サンプルした時点で線形になる（§11 TextureAtlas）
@@ -1726,10 +1880,16 @@ pub struct TaaConfig {
     /// 分散クリップの範囲の広さ（周囲の色の標準偏差の倍率。下記）
     pub color_rejection_threshold: f32,
     /// 動きのベクトルを書き込む画像のフォーマット
-    pub motion_vector_format: TextureFormat,
+    pub motion_vector_format: MotionVectorFormat,
+}
+
+pub enum MotionVectorFormat {
+    Rg16Float, // 半精度。多くの場合これで足りる
+    Rg32Float, // 単精度。大きな画面で精度が足りない場合
 }
 ```
 
+- **決定：動きのベクトルのフォーマットは Lonas の列挙型 `MotionVectorFormat` で指定する。**wgpu の型を公開 API に出さない（§11 サーフェスのフォーマット）
 - **決定：カメラのカットは `gpu.invalidate_history(surface_id)` で知らせる。**そのサーフェスの TAA の履歴を無効化する
 
 ```rust
