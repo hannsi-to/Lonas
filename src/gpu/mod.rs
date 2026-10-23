@@ -58,6 +58,42 @@ pub struct GpuContext {
     next_manager_id: u32,
     // Object*::new(&gpu) で発行するため、&self で増やせるようにする（§2）
     next_object_id: AtomicU64,
+    // ウィンドウなしの GpuContext が生きている間持つ。device より後に drop するため最後に置く
+    #[cfg(test)]
+    _gpu_test_lock: Option<GpuTestLock>,
+}
+
+// GPU を使うテストを 1 つずつ動かすためのロック。並列にデバイスを作ると止まる環境があるため
+// GpuContext を Send に保つため、MutexGuard ではなく Condvar で待つ
+#[cfg(test)]
+struct GpuTestLock;
+
+#[cfg(test)]
+static GPU_TEST_LOCKED: (std::sync::Mutex<bool>, std::sync::Condvar) = (std::sync::Mutex::new(false), std::sync::Condvar::new());
+
+#[cfg(test)]
+impl GpuTestLock {
+    fn acquire() -> Self {
+        let (locked, released) = &GPU_TEST_LOCKED;
+        let mut locked = locked.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        while *locked {
+            locked = released.wait(locked).unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+
+        *locked = true;
+        GpuTestLock
+    }
+}
+
+#[cfg(test)]
+impl Drop for GpuTestLock {
+    fn drop(&mut self) {
+        let (locked, released) = &GPU_TEST_LOCKED;
+
+        *locked.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = false;
+        released.notify_one();
+    }
 }
 
 impl GpuContext {
@@ -93,10 +129,15 @@ impl GpuContext {
 
     // サーフェスを持たない GpuContext。GPU を使うテストで使う（PLAN.md 全体の方針）
     #[cfg(test)]
+    // 作ってから drop するまで、他の GPU を使うテストを待たせる
     pub(crate) fn new_headless(config: LonasConfig) -> Result<Self, LonasError> {
         config.validate();
 
-        pollster::block_on(Self::with_instance(create_instance(config.backend), None, config))
+        let lock = GpuTestLock::acquire();
+        let mut context = pollster::block_on(Self::with_instance(create_instance(config.backend), None, config))?;
+        context._gpu_test_lock = Some(lock);
+
+        Ok(context)
     }
 
     async fn with_instance(
@@ -145,6 +186,8 @@ impl GpuContext {
             frame: FrameClock::new(),
             next_manager_id: 0,
             next_object_id: AtomicU64::new(0),
+            #[cfg(test)]
+            _gpu_test_lock: None,
         })
     }
 
