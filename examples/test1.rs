@@ -1,7 +1,7 @@
 // DESIGN.md の API に沿ったユーザー側のサンプル
 // cargo run --example test1（T：TAA への切り替えとカメラのカット、V：垂直同期の切り替え）
 
-use Lonas::lonas::{self,
+use lonas::lonas::{
     AntiAliasing, Backend, BindingConfig, BindingSlot, Blend, Camera2D, Camera3D, Color, CoordinateSystemConfig, CullMode,
     DrawManager2D, DrawManager3D, FilterMode, GpuContext, Handedness, Instance2D, Instance3D, InstanceId,
     LonasConfig, LonasError, Matrix4f, MemoryCapacity, MemoryConfig, MemoryUpdateType, MotionVectorFormat, Object2D,
@@ -64,10 +64,36 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
-                application.draw_loop();
                 window.request_redraw();
+
+                // デバイスが失われたら、GPU のものをすべて作り直す（§12 デバイスの喪失）
+                if let Err(error) = application.draw_loop() {
+                    eprintln!("{error}。作り直します");
+                    self.rebuild(event_loop);
+                }
             }
             _ => {}
+        }
+    }
+}
+
+impl App {
+    fn rebuild(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(window) = self.window.clone() else { return };
+        let size = window.inner_size();
+
+        // 古い GpuContext を先に drop し、ウィンドウのサーフェスを手放してから作り直す
+        self.application = None;
+
+        match TestApplication::init(window, size.width, size.height) {
+            Ok(application) => {
+                self.application = Some(application);
+                self.vsync = true;
+            }
+            Err(error) => {
+                eprintln!("作り直せませんでした: {error}");
+                event_loop.exit();
+            }
         }
     }
 }
@@ -350,7 +376,8 @@ impl TestApplication {
         })
     }
 
-    pub fn draw_loop(&mut self) {
+    // デバイスが失われたら Err（§12 デバイスの喪失）
+    pub fn draw_loop(&mut self) -> Result<(), LonasError> {
         if self.x > 100.0 {
             self.reverse = true;
         }
@@ -401,7 +428,7 @@ impl TestApplication {
             surface: self.main_surface,
             clear_color: Some(Color::new(0.1, 0.1, 0.12, 1.0)),
             draw_managers: &mut [&mut self.draw_manager_3d, &mut self.draw_manager_2d],
-        }]);
+        }])
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {

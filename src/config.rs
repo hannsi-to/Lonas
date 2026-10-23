@@ -222,7 +222,7 @@ impl LonasConfig {
             self.dynamic_growth_factor,
         );
         assert!(
-            self.staging_chunk_size > 0 && self.staging_chunk_size % 4 == 0,
+            self.staging_chunk_size > 0 && self.staging_chunk_size.is_multiple_of(4),
             "staging_chunk_size は 0 より大きい 4 の倍数にしてください（{}）",
             self.staging_chunk_size,
         );

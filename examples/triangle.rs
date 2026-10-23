@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 mod common;
 
-use Lonas::lonas::{
+use lonas::lonas::{
     Camera2D, Camera3D, Color, CullMode, DrawManager2D, DrawManager3D, GpuContext, Instance2D, Instance3D, InstanceId,
     Matrix4f, MemoryUpdateType, Object2D, Object3D, ProjectionMode, Quaternion, ResourceManager, SurfaceDraw, SurfaceId,
     Topology, Vector2f, Vector3f, VertexLayout, wgsl,
@@ -180,7 +180,8 @@ impl State {
             surface: self.surface,
             clear_color: Some(Color::rgb(0.1, 0.1, 0.12)),
             draw_managers: &mut [&mut self.manager_3d, &mut self.manager_2d],
-        }]);
+        }])
+        .expect("GPU のデバイスが失われました"); // 作り直す例は test1.rs（§12 デバイスの喪失）
     }
 }
 

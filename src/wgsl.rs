@@ -3,7 +3,7 @@
 // ユーザーが自分の WGSL の先頭につなげて登録する struct の定義
 // バインディングの宣言は番号が BindingConfig 次第のため、ユーザーが書く
 //
-// let src = format!("{}{}", Lonas::wgsl::STRUCTS, MY_WGSL);
+// let src = format!("{}{}", lonas::wgsl::STRUCTS, MY_WGSL);
 // let shader = resource_manager.register_shader(&src)?;
 pub const STRUCTS: &str = r#"
 struct Instance2D {

@@ -9,7 +9,7 @@ use crate::gpu::{GpuContext, SurfaceDraw, SurfaceId};
 use crate::instance::{Instance2D, Instance3D, Visibility};
 use crate::math::{Matrix4f, Quaternion, Vector2f, Vector3f};
 use crate::memory::MemoryUpdateType;
-use crate::object::{Object2D, Object3D, Topology};
+use crate::object::{Dash, JointType, Object2D, Object3D, Topology};
 use crate::resource::{ResourceManager, ShaderId};
 use crate::vertex::VertexLayout;
 use crate::wgsl::STRUCTS;
@@ -117,9 +117,68 @@ fn draw_2d(scene: &mut Scene, manager: &mut DrawManager2D, objects: &mut [&mut O
         surface: scene.surface,
         clear_color: Some(Color::BLACK),
         draw_managers: &mut [manager],
-    }]);
+    }])
+    .unwrap();
 
     scene.gpu.read_pixels(scene.surface)
+}
+
+// ---- 線：Stroke（§10）----
+
+// (8, 32) から (56, 32) への太さ 4 の白い横線を描く。cull_mode は既定（Back）のままにし、三角形の向きも確かめる
+fn draw_stroke(scene: &mut Scene, joint_type: JointType, dash: Option<Dash>) -> Vec<[u8; 4]> {
+    let mut manager = manager_2d(scene);
+    let mut object = Object2D::new(&scene.gpu);
+    object
+        .memory_update_type(MemoryUpdateType::Dynamic)
+        .topology(Topology::Stroke { line_width: 4.0, joint_type, strip: true, dash })
+        .shader(scene.shader);
+    object.add_instance(Instance2D::default());
+
+    scene.gpu.begin_frame();
+    object.begin();
+    object.vertex_color(8.0, 32.0, 1.0, 1.0, 1.0, 1.0);
+    object.vertex_color(56.0, 32.0, 1.0, 1.0, 1.0, 1.0);
+    object.end(&mut manager);
+    scene.gpu.end_frame(&mut scene.resources, &mut [SurfaceDraw {
+        surface: scene.surface,
+        clear_color: Some(Color::BLACK),
+        draw_managers: &mut [&mut manager],
+    }])
+    .unwrap();
+
+    scene.gpu.read_pixels(scene.surface)
+}
+
+#[test]
+fn stroke_draws_thick_line_with_caps() {
+    let Some(mut scene) = scene(SHADER_2D) else { return };
+
+    let butt = draw_stroke(&mut scene, JointType::Miter, None);
+    // 太さ 4 なので y = 30〜33 の画素に入り、y = 35 には出ない
+    assert_color(pixel(&butt, 32, 30), [255, 255, 255], "線の上側");
+    assert_color(pixel(&butt, 32, 33), [255, 255, 255], "線の下側");
+    assert_color(pixel(&butt, 32, 35), [0, 0, 0], "線の外");
+    // 端を丸めなければ、始点より手前には出ない
+    assert_color(pixel(&butt, 7, 32), [0, 0, 0], "始点の手前（丸めなし）");
+
+    let round = draw_stroke(&mut scene, JointType::RoundStartEnd, None);
+    // 半径 2 の丸めで、始点・終点の 1 画素外まで塗られる
+    assert_color(pixel(&round, 7, 32), [255, 255, 255], "始点の手前（丸め）");
+    assert_color(pixel(&round, 56, 32), [255, 255, 255], "終点の先（丸め）");
+}
+
+#[test]
+fn stroke_draws_dashes() {
+    let Some(mut scene) = scene(SHADER_2D) else { return };
+
+    // 始点 x = 8 から、長さ 8 の線と 8 の隙間をくり返す：8〜16, 24〜32, 40〜48
+    let pixels = draw_stroke(&mut scene, JointType::Miter, Some(Dash { length: 8.0, gap: 8.0, offset: 0.0 }));
+
+    for (x, white) in [(12, true), (20, false), (28, true), (36, false), (44, true), (52, false)] {
+        let expected = if white { [255, 255, 255] } else { [0, 0, 0] };
+        assert_color(pixel(&pixels, x, 32), expected, &format!("x = {x}"));
+    }
 }
 
 fn manager_2d(scene: &mut Scene) -> DrawManager2D {
@@ -262,7 +321,8 @@ fn draw_3d(scene: &mut Scene, manager: &mut DrawManager3D, objects: &mut [&mut O
         surface: scene.surface,
         clear_color: Some(Color::BLACK),
         draw_managers: &mut [manager],
-    }]);
+    }])
+    .unwrap();
 
     scene.gpu.read_pixels(scene.surface)
 }
@@ -382,7 +442,8 @@ fn draw_textured(scene: &mut Scene, manager: &mut DrawManager2D, objects: &mut [
         surface: scene.surface,
         clear_color: Some(Color::BLACK),
         draw_managers: &mut [manager],
-    }]);
+    }])
+    .unwrap();
 
     scene.gpu.read_pixels(scene.surface)
 }
@@ -547,7 +608,8 @@ fn partial_pixels(scene: &mut Scene, manager: &mut DrawManager2D, object: &mut O
         surface: scene.surface,
         clear_color: Some(Color::BLACK),
         draw_managers: &mut [manager],
-    }]);
+    }])
+    .unwrap();
 
     // 履歴を 95% 使うフレームでは白や黒に近い値になるため、ほぼ白・黒も数える
     scene.gpu.read_pixels(scene.surface).iter().filter(|p| p[0] > 2 && p[0] < 253).count()

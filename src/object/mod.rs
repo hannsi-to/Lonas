@@ -3,12 +3,13 @@
 
 pub(crate) mod core;
 pub(crate) mod instance_slots;
+mod stroke;
 #[cfg(test)]
 mod tests;
 pub(crate) mod topology;
 
 pub use instance_slots::InstanceId;
-pub use topology::Topology;
+pub use topology::{Dash, JointType, Topology};
 
 use crate::config::{Blend, CullMode};
 use crate::draw::{CameraId, DrawManager2D, DrawManager3D};
@@ -73,7 +74,9 @@ macro_rules! object_common {
                 self
             }
 
+            // Stroke の line_width・Dash の値が不正なら panic（§10 線：Stroke）
             pub fn topology(&mut self, topology: Topology) -> &mut Self {
+                topology.validate();
                 self.core.set("topology", |core| &mut core.topology, topology);
                 self
             }

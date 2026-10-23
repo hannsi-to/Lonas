@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 mod common;
 
-use Lonas::lonas::{Color, GpuContext, ResourceManager, SurfaceDraw, SurfaceId};
+use lonas::lonas::{Color, GpuContext, ResourceManager, SurfaceDraw, SurfaceId};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -58,7 +58,8 @@ impl ApplicationHandler for App {
                     surface: state.surface,
                     clear_color: Some(color),
                     draw_managers: &mut [],
-                }]);
+                }])
+                .expect("GPU のデバイスが失われました"); // 作り直す例は test1.rs（§12 デバイスの喪失）
 
                 state.frame += 1;
                 state.window.request_redraw();

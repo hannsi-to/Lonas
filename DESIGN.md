@@ -37,7 +37,7 @@ object.end(&mut draw_manager_2d);
 
 gpu.end_frame(&mut resource_manager, &mut [
     SurfaceDraw { surface: main_surface, clear_color: Some(color), draw_managers: &mut [&mut draw_manager_3d, &mut draw_manager_2d] },
-]);
+])?; // デバイスが失われたら Err（§12 デバイスの喪失）
 ```
 
 **高頻度ではないが、描画中でも呼ばれる関数群**
@@ -864,10 +864,12 @@ impl GpuContext {
         width: u32,
         height: u32,
     ) -> Result<SurfaceId, LonasError>;
+    pub fn remove_surface(&mut self, surface: SurfaceId); // §11 複数ウィンドウ
     pub fn resize(&mut self, surface: SurfaceId, width: u32, height: u32);
     pub fn surface_size(&self, surface: SurfaceId) -> Vector2f; // resize で通知された大きさ（ピクセル）
     pub fn begin_frame(&mut self);
-    pub fn end_frame(&mut self, resource_manager: &mut ResourceManager, surfaces: &mut [SurfaceDraw<'_, '_>]);
+    // デバイスが失われたら Err(DeviceLost)（§12 デバイスの喪失）
+    pub fn end_frame(&mut self, resource_manager: &mut ResourceManager, surfaces: &mut [SurfaceDraw<'_, '_>]) -> Result<(), LonasError>;
 }
 
 pub struct SurfaceDraw<'a, 'b> {
@@ -886,7 +888,7 @@ object_ui.end(&mut draw_manager_2d);
 // サーフェスごとに、渡した順に描画する（3D → 2D）
 gpu.end_frame(&mut resource_manager, &mut [
     SurfaceDraw { surface: main_surface, clear_color: Some(color), draw_managers: &mut [&mut draw_manager_3d, &mut draw_manager_2d] },
-]);
+])?; // デバイスが失われたら Err（§12 デバイスの喪失）
 ```
 
 - **決定：`new` / `add_surface` は、ウィンドウの最初の大きさ（ピクセル）を受け取る。**`raw-window-handle` からは大きさが分からず、サーフェスの設定に必要なため。以降の変化は `resize` で知らせる（段階 4 で決定）
@@ -953,6 +955,7 @@ gpu.end_frame(&mut resource_manager, &mut [
 | `uniform()` に渡した型の大きさがシェーダーの uniform の要素と違う、またはシェーダーに uniform の配列がない | `end_frame` で panic（§11 uniform） |
 | 別の `ResourceManager` の `ShaderId` / `TextureId` を使う、または `Object*` の ID と別の `ResourceManager` を `end_frame` に渡す | `end_frame` で panic（§11） |
 | 同じサーフェスを `end_frame` の `SurfaceDraw` に 2 回以上渡す | `end_frame` で panic（§11 複数ウィンドウ） |
+| 別の `GpuContext` の、または取り除いた `SurfaceId` を渡す | その関数（`end_frame` を含む）で panic（§11 複数ウィンドウ） |
 | 存在しない `SurfaceId` を `resize` / `set_present_mode` / `set_anti_aliasing` / `end_frame` などに渡す | その関数で panic |
 | `index()` も `topology()` も呼ばずに `end` | `Object*::end` で panic（§10） |
 | `DrawManager*` に積んだのに `end_frame` に渡さなかった | 次のフレームでその `DrawManager*` に `Object*::end` が呼ばれた時点で panic（前のフレームのコマンドが残っている） |
@@ -1008,7 +1011,7 @@ object.end(&mut draw_manager);
 
 ### 三角形化：topology
 
-GPU に送るプリミティブは常に三角形（`TriangleList`）のまま、**インデックスの作り方だけ** を `topology()` で選ぶ。
+GPU に送るプリミティブは常に三角形（`TriangleList`）のまま、**インデックスの作り方だけ** を `topology()` で選ぶ（`Stroke` だけは頂点も作る。下記の「線：Stroke」）。
 「高頻度ではないが描画中でも呼ばれる」区分。
 
 ```rust
@@ -1017,6 +1020,7 @@ pub enum Topology {
     TriangleFan,   // 凸多角形の外周
     TriangleStrip, // 帯状に続く三角形
     Polygon,       // へこみのある多角形の外周
+    Stroke { line_width: f32, joint_type: JointType, strip: bool, dash: Option<Dash> }, // 太さのある線
 }
 
 impl Object2D { // Object3D も同じ
@@ -1030,12 +1034,14 @@ impl Object2D { // Object3D も同じ
 | `TriangleFan` | 0,1,2, 0,2,3, 0,3,4, … | 頂点数が変わった時 |
 | `TriangleStrip` | 0,1,2, 2,1,3, 2,3,4, …（向きを揃えるため 1 つおきに入れ替える） | 頂点数が変わった時 |
 | `Polygon` | 単調多角形分割で分割（O(n log n)、下記） | 頂点の位置が変わった時 |
+| `Stroke` | 頂点を線の中心として、線の頂点とインデックスを作る（下記） | 頂点（位置以外の要素を含む）・設定・頂点数のどれかが変わった時 |
 
 - パイプラインもバッチングも変わらない（GPU 側は常に三角形）
+- `Stroke` の値を持つため、`Topology` は `Eq` / `Hash` を実装しない（`PartialEq` のみ）
 - `TriangleList` / `TriangleFan` / `TriangleStrip` は頂点数だけで決まるため、計算はほぼ不要で使い回せる
 - `Polygon` は頂点の位置が変わるたびに計算し直す必要がある（計算量 O(n log n)、下記）。形が頻繁に変わり、頂点数が多いものでは負担になる
 - `Polygon` は 2D の多角形（3D では 1 つの平面上にある多角形）を対象とする
-- 扱わないもの：穴のある多角形、自分と交差する多角形、線・点（線は細長い四角形としてユーザーが作る）
+- 扱わないもの：穴のある多角形、自分と交差する多角形、点。線は `Stroke` で描く
 - **決定：頂点数が分け方に合わない場合、余った頂点を捨てて `log` で警告する。**
   - `TriangleList` で 3 の倍数でない場合：最後の余り（1〜2 個）を三角形に含めない
   - どの分け方でも頂点が 3 個未満の場合：何も描かない
@@ -1058,6 +1064,55 @@ impl Object2D { // Object3D も同じ
 - 却下案：耳切り法（O(n²)。頂点が多いと遅い）
 - 却下案：Compute Shader での三角形化。1 つの多角形の中では処理を並列にできず、効果がない
 - 却下案：三角形に分けずに塗る方法（ステンシルで塗る技法）。2 回の描画とステンシルバッファが必要で、パイプラインとバッチングの方式に合わない
+
+#### 線：Stroke
+
+**決定：`Topology::Stroke` で、頂点を線の中心として太さのある線を作る。**三角形化は CPU で行う（`object/stroke.rs`）。
+
+```rust
+Stroke {
+    line_width: f32,         // 線の太さ。頂点と同じ単位（ピクセル座標なら px）
+    joint_type: JointType,   // 角のつなぎ方
+    strip: bool,             // true なら開いた折れ線、false なら閉じた輪郭
+    dash: Option<Dash>,      // Some なら破線
+}
+
+pub enum JointType { None, Miter /* 既定 */, Bevel, Round, RoundStart, RoundEnd, RoundStartEnd }
+
+pub struct Dash {
+    pub length: f32, // 線を描く部分の長さ
+    pub gap: f32,    // 描かない部分の長さ
+    pub offset: f32, // 模様をずらす量（始点では模様の先頭から offset だけ進んだ位置から始まる）
+}
+```
+
+| `JointType` | 角 | 端（開いた折れ線のみ） |
+|---|---|---|
+| `None` | 何も足さない（外側に隙間が空く） | 平ら（頂点で切る） |
+| `Miter` | 外側の辺を延長して尖らせる。尖りの長さが線の太さの半分の 4 倍（SVG の `stroke-miterlimit` の既定値と同じ）を超えたら `Bevel` | 平ら |
+| `Bevel` | 外側の角を三角形 1 枚で塞ぐ | 平ら |
+| `Round` | 外側の角を扇形で丸める | 平ら |
+| `RoundStart` / `RoundEnd` / `RoundStartEnd` | `Round` と同じ | 始点 / 終点 / 両端を半円で丸める |
+
+- **決定：`Stroke` だけは GPU に送る頂点を作る。**他の分け方はユーザーの頂点をそのまま送り、インデックスだけを作るが、線は太さの分だけ外側に頂点が要るため
+  - ユーザーが書いた頂点（線の中心の点）は、他の分け方と同じくその場で比較しながら写しに書く（§1・§4）
+  - 作った頂点は前のフレームに作ったものと比べ、変わった位置の最小〜最大だけを送る。点・設定・点の数が変わらなければ作り直さない
+  - `Stroke` をやめたフレームでは、元の頂点をすべて送り直す
+  - 境界（§10 視界の判定に使う大きさ）は、線の太さを含めて作った頂点から求める
+  - Static の `Object*` では、作った頂点の数が変わると panic する（§6）。角の丸めの分割数・Miter から Bevel への切り替え・破線の本数は点の位置で変わるため、点を動かす線は Dynamic にする
+- **決定：線は頂点の xy 平面で広げ、z は頂点ごとの値を保つ。2D・3D とも同じ。**3D の線をどの平面で広げるかは、カメラか平面を決めないと定まらないため。3D で別の向きにしたい場合はインスタンスの変換で回す
+- **決定：作る三角形は xy 平面で反時計回りに揃える**（2D の `Polygon` と同じ）
+- 色・UV・法線は元の頂点の値を写す。破線の切れ目にできる頂点は、辺の両端の値を線形に補間する
+- 角の内側では、2 本の辺の四角形が重なる。半透明の線では重なった部分が濃くなる
+- 位置が同じ点が続く場合は 1 つにまとめる。閉じた輪郭で最後の点が始点と同じなら、最後の点を捨てる。点が 2 個未満なら何も描かない。点が 2 個の閉じた輪郭は 1 本の線分として描く
+- 丸い角・端の扇形は、1 つの三角形が受け持つ角度を π/16 以下にする（半円で 16 個）
+- 破線：
+  - 破線の 1 本 1 本を短い開いた折れ線として扱う。破線の中の角は `joint_type` でつなぎ、端の丸め（`RoundStart` など）は各破線の端に付く（SVG の `stroke-linecap` と同じ考え方）
+  - 閉じた輪郭では、始点をまたぐ破線を 1 本につなぐ（始点の角も `joint_type` でつながる）
+  - 模様の位置は線に沿った長さで決まり、`offset` を変えると模様が線に沿って動く
+- **決定：`line_width` と `Dash` の値は `topology()` を呼んだ時に検査し、不正なら panic**（§3 設定の値の検査）。`line_width`・`length`・`gap` は 0 より大きい有限の値、`offset` は有限の値（負の値も使える）
+- `index()` を呼んだフレームは、他の分け方と同じく `topology()` を使わないため、`Stroke` も使わない（頂点をそのまま送る）
+- 却下案：頂点シェーダーで線を広げる方法。描画の頂点の並びとシェーダーとの約束事（§11）が線のためだけに変わり、ユーザーのシェーダーに線の処理を書かせることになるため
 
 ### インスタンスが 0 個の Object
 
@@ -1397,7 +1452,7 @@ let (width, height) = resource_manager.texture_size(texture_id); // 登録した
 
 object.shader(shader_id);
 
-gpu.end_frame(&mut resource_manager, &mut [ /* SurfaceDraw ... */ ]);
+gpu.end_frame(&mut resource_manager, &mut [ /* SurfaceDraw ... */ ])?;
 ```
 
 #### GPU との分担
@@ -1773,7 +1828,7 @@ pub enum LonasError {
     UnsupportedAdapter { missing: &'static str }, // 必須の機能がない（§8。VERTEX_STORAGE / COMPUTE_SHADERS / INDIRECT_EXECUTION / INDIRECT_FIRST_INSTANCE）
     RequestDevice(wgpu::RequestDeviceError),
     CreateSurface(wgpu::CreateSurfaceError),
-    DeviceLost { reason: String }, // 今は返す API がない（§12 デバイスの喪失）
+    DeviceLost { reason: String }, // end_frame が返す（§12 デバイスの喪失）
     UnsupportedSurfaceFormat,          // sRGB のフォーマットに対応していない（§11 サーフェスのフォーマット）
     UnsupportedSampleCount { requested: u32, supported: Vec<u32> },
     UnsupportedPresentMode(PresentMode),  // §8
@@ -1895,7 +1950,7 @@ gpu.begin_frame();
 gpu.end_frame(&mut resource_manager, &mut [
     SurfaceDraw { surface: main_surface, clear_color: Some(color), draw_managers: &mut [&mut dm_3d, &mut dm_2d] },
     SurfaceDraw { surface: sub_surface,  clear_color: None,        draw_managers: &mut [&mut dm_ui] },
-]);
+])?;
 
 gpu.resize(main_surface, width, height);
 gpu.set_anti_aliasing(main_surface, AntiAliasing::Msaa { sample_count: 4 })?;
@@ -1910,6 +1965,14 @@ gpu.set_anti_aliasing(main_surface, AntiAliasing::Msaa { sample_count: 4 })?;
 - 同じ `DrawManager*` を複数のサーフェスに渡すことは、`&mut` を同時に 2 つ作れないため **コンパイルエラー** になる
 - ヒープ（§6）・`ResourceManager`・パイプラインはサーフェス間で共有する
 - 描画先の取得・`present`・深度バッファはサーフェスごと
+
+**決定：`remove_surface(surface)` でサーフェスを取り除く。**ウィンドウを閉じるときに呼ぶ。`new` / `add_surface` で渡したウィンドウ（winit なら `Arc<Window>`）は、ここで手放す
+
+- `SurfaceId` は発行元の `GpuContext`・番号・世代を持つ。取り除いた番号は次の `add_surface` で再利用するが、世代を進めるため古い `SurfaceId` とは区別できる（§11 ID と同じ考え方。`ShaderId` / `TextureId` と同じ表を使う）
+- 別の `GpuContext` の、または取り除いた `SurfaceId` を `resize` などの関数や `end_frame` に渡したら panic（§9 誤用時は panic）。2 つは別の文言で知らせる。`end_frame` は、GPU の処理を始める前にすべての `SurfaceId` を確かめる
+- フレーム中に呼んでもよい。そのフレームの `end_frame` に、取り除いた `SurfaceId` を渡さなければよい
+- 最初のサーフェスを取り除いても、`GpuContext` はそのまま使える。ただしアダプターは最初のサーフェスに合わせて選んでいるため、後から足すサーフェスが別の GPU につながったウィンドウだと `add_surface` が `Err` になることがある
+- テスト用のウィンドウなしの描画先も同じ表に入れ、本番と同じ検査を通す（テストのときだけ存在しない `SurfaceId` を飛ばす、という分岐は持たない）
 
 ### スレッド
 
@@ -2052,10 +2115,30 @@ gpu.set_anti_aliasing(surface_id, AntiAliasing::Taa)?;
 
 新たに出た未決事項はここに追加する。
 
-### デバイスの喪失（通しレビューで追加）
+### デバイスの喪失（通しレビューで追加・決定済み）
 
-ドライバーのリセットなどで GPU のデバイスが失われたときの扱いが決まっていない。`LonasError::DeviceLost` はあるが、返す API がない。
+ドライバーのリセットなどで GPU のデバイスが失われたときの扱い。
 
-- 対応するには、`end_frame` を `Result` にするか、失われたことを問い合わせる関数を足すなどの API の変更が要る
-- 復旧するには、シェーダー・アトラス・ヒープなどの GPU 上のリソースをすべて作り直す必要がある（`Object*` の CPU 側の写し（§4）から再転送できるが、`GpuContext` が `Object*` を知らない）
-- 決まるまでは wgpu の既定の挙動（panic など）のままとする
+**決定：`end_frame` を `Result<(), LonasError>` にし、デバイスが失われていたら `Err(LonasError::DeviceLost { reason })` を返す。**
+
+- 環境に起因するエラーは `Result` で返す方針（§11 エラーの方針）に合わせる。毎フレーム必ず呼ぶ関数なので、知らせる場所としても自然で、`Result` は使わないとコンパイラが警告するため見落としにくい
+- 喪失したら、`end_frame` は GPU の処理（転送・Compute・描画・`submit`・`present`）を一切せずに `Err` を返す。**一度だけでなく、以降のフレームも毎回返す**（あるフレームで処理しそこねても見落とさない）
+- 確かめるのは `end_frame` の最初と、`submit` の前。フレームの途中で失われた場合は、そのフレームで記録した命令を送らずに捨てる
+- `Err` を返すフレームでも、`DrawManager*` の描画コマンドの片付けとフレーム番号の終了は行う。次の `begin_frame`・`Object*` の `end` はそのまま呼べる（どちらも CPU 側の処理だけで、戻り値は変えない）
+- **復旧は Lonas の中ではしない。**`GpuContext` は `Object*` を知らず、GPU 上のリソースを作り直せないため。使う側が `GpuContext`・`DrawManager*`・`ResourceManager`・`Object*` をすべて作り直す。ウィンドウのサーフェスを手放すため、新しい `GpuContext` を作る前に古いものを drop する（例：`examples/test1.rs`）
+
+**喪失の検知**
+
+- `GpuContext` を作るときに `Device::set_device_lost_callback` を登録し、理由を共有の値（`Arc<Mutex<Option<String>>>`）に記録する。コールバックは wgpu の内部から別のスレッドで呼ばれることがあるため、中では記録だけを行う
+- 理由が `DeviceLostReason::Destroyed` のものは記録しない。`GpuContext` を drop したときのもので、Lonas 以外は `device.destroy` を呼べないため
+- 最初の理由を残す。理由の文字列が空なら「原因は分かりません」とする
+- `end_frame` で呼んでいる `device.poll` の失敗（wgpu 30 では `Timeout` / `WrongSubmissionIndex`）は待つ場合のもので、喪失は返さない。失敗したらログに出すだけにする
+- wgpu には喪失を起こす公開の手段がないため、テストでは記録する値に直接書き込んで確かめる
+
+却下案：
+
+| 案 | 却下の理由 |
+|---|---|
+| 失われたかを問い合わせる関数を足す | 呼び忘れると気付けず、呼ばないまま次の `end_frame` が来たときの扱いを別に決める必要がある |
+| 設定でコールバックを受け取る | wgpu のスレッドで呼ばれるため中で作り直しはできず、結局フラグを立てて問い合わせる形になる |
+| panic にする | 誤用ではなく環境に起因するため、§11 エラーの方針に反する。アプリが作り直して続けられない |

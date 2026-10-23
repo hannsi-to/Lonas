@@ -3,9 +3,11 @@
 use crate::config::{AntiAliasing, MotionVectorFormat, PresentMode};
 use crate::error::LonasError;
 use crate::render::antialiasing::FrameTargets;
+use crate::slots::SlotId;
 
+// 発行元の GpuContext・番号・世代。remove_surface の後に番号が再利用されても、古い ID と区別できる（§11 複数ウィンドウ）
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct SurfaceId(pub(crate) u32);
+pub struct SurfaceId(pub(crate) SlotId);
 
 enum Target {
     Window {

@@ -356,6 +356,7 @@ pub(crate) struct Strides {
 }
 
 // バッファに書き込み、Compute を記録する（end_frame の「4. カメラ」「5. Compute」）
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn record_compute(
     device: &wgpu::Device,
     queue: &wgpu::Queue,

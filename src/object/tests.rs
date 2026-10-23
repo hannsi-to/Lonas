@@ -7,13 +7,22 @@ use crate::config::LonasConfig;
 use crate::config::tests::sample_config;
 use crate::draw::{Camera2D, Camera3D, HeapRequest, SpaceKind};
 use crate::vertex::VertexLayout;
-use crate::gpu::{SurfaceDraw, heap::Heap};
+use crate::gpu::{SurfaceDraw, SurfaceId, heap::Heap};
 use crate::math::Quaternion;
 use crate::resource::ResourceManager;
 
+// headless() が最初に足す描画先。end_frame に渡す
+fn surface(gpu: &GpuContext) -> SurfaceId {
+    gpu.surface_id_for_test(0)
+}
+
 fn headless(config: LonasConfig) -> Option<GpuContext> {
     match GpuContext::new_headless(config) {
-        Ok(gpu) => Some(gpu),
+        Ok(mut gpu) => {
+            let added = gpu.add_offscreen(4, 4);
+            assert_eq!(added, surface(&gpu));
+            Some(gpu)
+        }
         Err(error) => {
             eprintln!("GPU を使うテストを飛ばします: {error}");
             None
@@ -37,7 +46,8 @@ fn camera_3d() -> Camera3D {
 }
 
 fn end_frame(gpu: &mut GpuContext, resources: &mut ResourceManager, manager: &mut DrawManager2D) {
-    gpu.end_frame(resources, &mut [SurfaceDraw { surface: crate::gpu::SurfaceId(0), clear_color: None, draw_managers: &mut [manager] }]);
+    let surface = surface(gpu);
+    gpu.end_frame(resources, &mut [SurfaceDraw { surface, clear_color: None, draw_managers: &mut [manager] }]).unwrap();
 }
 
 fn triangle(object: &mut Object2D, x: f32) {
@@ -345,6 +355,100 @@ fn staging_chunks_are_reused() {
     assert_eq!(active + free + in_flight, total, "GPU が追いついた後にチャンクが増えました");
 }
 
+// Stroke は作った頂点を送り、変わった位置だけを送り直す。Stroke をやめたら元の頂点をすべて送り直す（§10 線：Stroke）
+#[test]
+fn stroke_uploads_generated_vertices_and_switches_back() {
+    let Some(mut gpu) = headless(sample_config()) else { return };
+    let mut resources = ResourceManager::new();
+    let layout = VertexLayout::PositionColor;
+    let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), layout);
+    let vertices = SpaceKind::Vertex(layout);
+    let stride = layout.stride() as u64;
+    let stroke = |line_width| Topology::Stroke { line_width, joint_type: crate::object::JointType::Miter, strip: true, dash: None };
+    let mut object = Object2D::new(&gpu);
+    object.memory_update_type(MemoryUpdateType::Dynamic).topology(stroke(2.0));
+    object.add_instance(Instance2D::default());
+
+    // 直角に曲がる 3 点。辺の四角形 2 つ（頂点 8 個）と Miter の角（頂点 4 個）
+    let draw = |gpu: &mut GpuContext, object: &mut Object2D, manager: &mut DrawManager2D, last_red: f32| {
+        gpu.begin_frame();
+        object.begin();
+        object.vertex_color(0.0, 0.0, 1.0, 1.0, 1.0, 1.0);
+        object.vertex_color(10.0, 0.0, 1.0, 1.0, 1.0, 1.0);
+        object.vertex_color(10.0, 10.0, last_red, 1.0, 1.0, 1.0);
+        object.end(manager);
+    };
+    let read_back = |gpu: &GpuContext, object: &Object2D| {
+        let [vertex, ..] = object.core.handles().unwrap();
+        gpu.heap().read(gpu.device(), gpu.queue(), vertices, gpu.heap().offset(vertices, vertex), object.core.uploaded_vertices().len() as u64)
+    };
+    let expected = |object: &Object2D| {
+        let uploaded = object.core.uploaded_vertices();
+        let mut bytes = vec![0; uploaded.len() * layout.stride()];
+        for (vertex, dst) in uploaded.iter().zip(bytes.chunks_exact_mut(layout.stride())) {
+            vertex.write_packed(layout, dst);
+        }
+        bytes
+    };
+
+    draw(&mut gpu, &mut object, &mut manager, 1.0);
+    assert_eq!(object.core.uploaded_vertices().len(), 12);
+    assert_eq!(writes(&manager, vertices), vec![(0, 12 * stride)]);
+    end_frame(&mut gpu, &mut resources, &mut manager);
+    assert_eq!(read_back(&gpu, &object), expected(&object));
+
+    // 同じ点なら作り直さず、何も送らない
+    draw(&mut gpu, &mut object, &mut manager, 1.0);
+    assert!(manager.core.heap_requests.is_empty());
+    end_frame(&mut gpu, &mut resources, &mut manager);
+
+    // 終点の色だけ変えると、2 本目の辺の終点側の 2 頂点だけを送る
+    draw(&mut gpu, &mut object, &mut manager, 0.0);
+    assert_eq!(writes(&manager, vertices), vec![(6, 2 * stride)]);
+    assert!(writes(&manager, SpaceKind::Index).is_empty());
+    end_frame(&mut gpu, &mut resources, &mut manager);
+    assert_eq!(read_back(&gpu, &object), expected(&object));
+
+    // 太さを変えると位置がすべて変わるが、三角形のつなぎ方は同じなのでインデックスは送らない
+    object.topology(stroke(4.0));
+    draw(&mut gpu, &mut object, &mut manager, 0.0);
+    assert_eq!(writes(&manager, vertices), vec![(0, 12 * stride)]);
+    assert!(writes(&manager, SpaceKind::Index).is_empty());
+    end_frame(&mut gpu, &mut resources, &mut manager);
+
+    // Stroke をやめたら、元の 3 頂点をすべて送り直す
+    object.topology(Topology::TriangleList);
+    draw(&mut gpu, &mut object, &mut manager, 0.0);
+    assert_eq!(object.core.uploaded_vertices(), object.core.vertices());
+    assert_eq!(writes(&manager, vertices), vec![(0, 3 * stride)]);
+    end_frame(&mut gpu, &mut resources, &mut manager);
+    assert_eq!(read_back(&gpu, &object), expected(&object));
+}
+
+// デバイスが失われたフレームでも、DrawManager* の描画コマンドは片付け、次のフレームで使えるようにする
+#[test]
+fn draw_commands_are_cleared_when_device_is_lost() {
+    let Some(mut gpu) = headless(sample_config()) else { return };
+    let mut resources = ResourceManager::new();
+    let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), VertexLayout::Position);
+    let mut object = new_triangle(&gpu, MemoryUpdateType::Dynamic);
+
+    gpu.simulate_device_lost("テストで失わせた");
+
+    for _ in 0..2 {
+        gpu.begin_frame();
+        object.begin();
+        triangle(&mut object, 0.0);
+        object.end(&mut manager);
+        assert_eq!(manager.core.draw_commands.len(), 1);
+
+        let surface = surface(&gpu);
+        let result = gpu.end_frame(&mut resources, &mut [SurfaceDraw { surface, clear_color: None, draw_managers: &mut [&mut manager] }]);
+        assert!(matches!(result, Err(crate::error::LonasError::DeviceLost { .. })));
+        assert!(manager.core.draw_commands.is_empty());
+    }
+}
+
 #[test]
 fn misuse_panics() {
     let Some(mut gpu) = headless(sample_config()) else { return };
@@ -451,7 +555,8 @@ fn draw_manager_3d_accepts_object_3d() {
     object.end(&mut manager);
     assert_eq!(object.core.index_values().len(), 6);
     assert_eq!(manager.core.draw_commands[0].instance_count, 1);
-    gpu.end_frame(&mut resources, &mut [SurfaceDraw { surface: crate::gpu::SurfaceId(0), clear_color: None, draw_managers: &mut [&mut manager] }]);
+    let surface = surface(&gpu);
+    gpu.end_frame(&mut resources, &mut [SurfaceDraw { surface, clear_color: None, draw_managers: &mut [&mut manager] }]).unwrap();
 
     object.remove_instance(id);
     gpu.begin_frame();
