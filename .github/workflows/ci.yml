@@ -15,8 +15,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # 新しいリリースで増えた lint で突然落ちないよう、手元と同じ版に固定する。上げるときは手元と揃えて変える
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.96.0"
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: clippy
