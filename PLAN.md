@@ -56,7 +56,7 @@ src/
 - [x] `Vector2f` / `Vector3f`：`new`・`ZERO`・`ONE`・配列からの `From`・基本の演算子
 - [x] `Quaternion`：`IDENTITY`・`from_axis_angle`・掛け算・ベクトルの回転
 - [x] `Matrix4f`：`IDENTITY`・`from_translation` / `from_rotation` / `from_scale` / `from_trs`・掛け算・逆行列
-- [x] 投影行列：透視投影・正射影。Reversed-Z（§11 深度バッファ）、手系と上方向（§11 座標系）に対応する
+- [x] 投影行列：透視投影・正射影。Reversed-Z（§11 深度バッファ）、手系（§11 座標系）に対応する（上方向の変換も作ったが、設定ごと削除した）
 - [x] `look_at` の計算（§11 Camera）
 - [x] `Color`：`new`・`rgb`・`from_rgba8`・定数・sRGB → 線形の変換（§11 色）
 - [x] `Vertex`：今の `src/vertex.rs` を移す。`VertexLayout` ごとにバイト列へ詰める関数（§10 頂点の並び方）

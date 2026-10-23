@@ -6,7 +6,7 @@ use Lonas::lonas::{self,
     DrawManager2D, DrawManager3D, FilterMode, GpuContext, Handedness, Instance2D, Instance3D, InstanceId,
     LonasConfig, LonasError, Matrix4f, MemoryCapacity, MemoryConfig, MemoryUpdateType, MotionVectorFormat, Object2D,
     Object3D, Origin2D, PresentMode, ProjectionMode, Quaternion, ResourceManager, ShaderId, SurfaceDraw, SurfaceId, TaaConfig,
-    TextureAtlasConfig, TextureId, Topology, UpAxis, Vector2f, Vector3f, VertexLayout, Visibility,
+    TextureAtlasConfig, TextureId, Topology, Vector2f, Vector3f, VertexLayout, Visibility,
 };
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::sync::Arc;
@@ -232,7 +232,6 @@ impl TestApplication {
             coordinate_system: CoordinateSystemConfig {
                 origin_2d: Origin2D::TopLeft,
                 handedness_3d: Handedness::RightHanded,
-                up_axis_3d: UpAxis::Y,
             },
             culling_2d: true,
             initial_anti_aliasing: AntiAliasing::Msaa { sample_count: 4 },

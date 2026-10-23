@@ -1768,7 +1768,6 @@ pub enum LonasError {
 pub struct CoordinateSystemConfig {
     pub origin_2d: Origin2D,       // 2D の原点
     pub handedness_3d: Handedness, // 3D の手系
-    pub up_axis_3d: UpAxis,        // 3D の上方向
 }
 
 pub enum Origin2D {
@@ -1782,16 +1781,13 @@ pub enum Handedness {
     LeftHanded,
 }
 
-pub enum UpAxis {
-    Y,
-    Z,
-}
 ```
 
 - **決定：2D の単位はピクセル。**`Camera2D::zoom = 1.0` のとき、1 単位がサーフェスの 1 ピクセルになる
-- 3D の手系と上方向は `Camera3D` のビュー・プロジェクション行列と `look_at` の計算に使う（§11 Camera）。深度は手系によらず Reversed-Z（§11 深度バッファ）
+- 3D の手系は `Camera3D` のビュー・プロジェクション行列と `look_at` の計算に使う（§11 Camera）。深度は手系によらず Reversed-Z（§11 深度バッファ）
 - 背面カリングの表裏（どちら回りを表とするか）は手系に合わせて Lonas が決める（§11 背面カリング）
-- **決定：`UpAxis::Z` の場合、Lonas の内部では Y が上の座標に回してから扱う。**回転は (x, y, z) → (x, z, −y)（X 軸まわりに −90 度）。右手系では +Y が前、左手系では −Y が前になる
+- **決定：3D の上方向（`UpAxis`）の設定は持たない。**カメラの向きは `rotation` と、`look_at` に渡す `up` で完全に決まるため、上方向を設定しても描画に影響しない（段階 6 で分かり、削除した）。Z が上の世界でも、`look_at` に `Vector3f::Z` を渡せばよい
+  - 却下案：`look_at` の `up` を省いたときの既定値にする（`LonasConfig` は既定値を設けない方針で、ユーザーが毎回書く項目が 1 つ増える割に、`look_at` の引数を 1 つ省けるだけ）
 - 却下案：2D を正規化座標（-1〜1）にする（UI をピクセルで置きたい場合にユーザーが変換する必要がある）
 
 ### 2D の視界外の省略
@@ -2026,4 +2022,4 @@ gpu.set_anti_aliasing(surface_id, AntiAliasing::Taa)?;
 
 ## 12. 未決事項
 
-- [ ] `UpAxis`（3D の上方向）の使い道（段階 6 で見つかった）。カメラの向きは `rotation` と、`look_at` に渡す `up` で完全に決まるため、今の実装では `UpAxis` は描画に影響しない。`look_at` の `up` を省いたときの既定値にする、項目を削除する、などを決める（§11 座標系）
+なし。新たに出た未決事項はここに追加する。

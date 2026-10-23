@@ -117,7 +117,6 @@ impl BindingConfig {
 pub struct CoordinateSystemConfig {
     pub origin_2d: Origin2D,
     pub handedness_3d: Handedness,
-    pub up_axis_3d: UpAxis,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -137,14 +136,6 @@ pub enum Handedness {
     RightHanded,
     // カメラは +Z を向く
     LeftHanded,
-}
-
-// 3D の上方向（§11 座標系）
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub enum UpAxis {
-    Y,
-    // Lonas の内部では Y が上の座標に回してから扱う（Matrix4f::up_axis_to_y）
-    Z,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -308,7 +299,6 @@ pub(crate) mod tests {
             coordinate_system: CoordinateSystemConfig {
                 origin_2d: Origin2D::TopLeft,
                 handedness_3d: Handedness::RightHanded,
-                up_axis_3d: UpAxis::Y,
             },
             culling_2d: true,
             initial_anti_aliasing: AntiAliasing::None,

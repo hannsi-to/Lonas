@@ -1,7 +1,7 @@
 use std::ops::Mul;
 
 use super::{Quaternion, Vector2f, Vector3f, Vector4f};
-use crate::config::{Handedness, UpAxis};
+use crate::config::Handedness;
 
 // 列優先の 4×4 行列。WGSL の mat4x4<f32> と同じ並びのため、そのまま GPU に送れる
 #[repr(C)]
@@ -122,19 +122,6 @@ impl Matrix4f {
             Vector4f::new(0.0, 0.0, -sign / depth, 0.0),
             Vector4f::new(-(right + left) / width, -(top + bottom) / height, far / depth, 1.0),
         )
-    }
-
-    // 上方向を Y に揃える回転（§11 座標系）。Z が上の場合は (x, y, z) → (x, z, -y)
-    pub fn up_axis_to_y(up_axis: UpAxis) -> Self {
-        match up_axis {
-            UpAxis::Y => Self::IDENTITY,
-            UpAxis::Z => Self::from_cols(
-                Vector4f::new(1.0, 0.0, 0.0, 0.0),
-                Vector4f::new(0.0, 0.0, -1.0, 0.0),
-                Vector4f::new(0.0, 1.0, 0.0, 0.0),
-                Vector4f::new(0.0, 0.0, 0.0, 1.0),
-            ),
-        }
     }
 
     pub fn row(&self, index: usize) -> Vector4f {
@@ -365,14 +352,5 @@ mod tests {
 
         // 既定の向き（-Z）を向くなら単位行列
         assert_matrix_eq(view, Matrix4f::IDENTITY);
-    }
-
-    #[test]
-    fn up_axis_z_maps_to_y() {
-        let m = Matrix4f::up_axis_to_y(UpAxis::Z);
-
-        assert_vector3_eq(m.transform_vector3(Vector3f::Z), Vector3f::Y);
-        assert_vector3_eq(m.transform_vector3(Vector3f::Y), -Vector3f::Z);
-        assert_vector3_eq(m.transform_vector3(Vector3f::X), Vector3f::X);
     }
 }

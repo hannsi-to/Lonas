@@ -3,7 +3,6 @@
 use Lonas::lonas::{
     AntiAliasing, Backend, BindingConfig, BindingSlot, Blend, CoordinateSystemConfig, CullMode, FilterMode, Handedness,
     LonasConfig, MemoryCapacity, MemoryConfig, MotionVectorFormat, Origin2D, PresentMode, TaaConfig, TextureAtlasConfig,
-    UpAxis,
 };
 
 pub fn config() -> LonasConfig {
@@ -37,7 +36,6 @@ pub fn config() -> LonasConfig {
         coordinate_system: CoordinateSystemConfig {
             origin_2d: Origin2D::TopLeft,
             handedness_3d: Handedness::RightHanded,
-            up_axis_3d: UpAxis::Y,
         },
         culling_2d: true,
         initial_anti_aliasing: AntiAliasing::None,
