@@ -6,6 +6,7 @@ pub(crate) mod staging;
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
+use std::sync::{Arc, Mutex, PoisonError};
 
 pub use camera::{Camera2D, Camera3D, CameraId, ProjectionMode};
 pub(crate) use camera::GpuCamera;
@@ -109,6 +110,10 @@ pub(crate) struct ObjectDefaults {
     pub layer: i32,
 }
 
+// 捨てられた Object* の領域（§6 解放：Drop の知らせ）
+// Object* が初回の end で受け取り、Drop で自分の領域を入れる。end_frame の後片付けで取り出して解放する
+pub(crate) type DroppedRegions = Arc<Mutex<Vec<(SpaceKind, GpuAllocation)>>>;
+
 // 2D / 3D で共通の部分（§5 2D / 3D の型）
 pub struct DrawManagerCore {
     pub(crate) id: ManagerId,
@@ -129,6 +134,7 @@ pub struct DrawManagerCore {
     pending_frame: Option<u64>,
     // GC で回収されたハンドル（§6 回収の通知）
     reclaimed: HashSet<GpuAllocation>,
+    dropped: DroppedRegions,
     next_serial: u32,
     // 詰めた頂点などを staging バッファへ書く前に置く場所。容量は使い回す
     pub(crate) scratch: Vec<u8>,
@@ -164,6 +170,7 @@ impl DrawManagerCore {
             touched: Vec::new(),
             pending_frame: None,
             reclaimed: HashSet::new(),
+            dropped: DroppedRegions::default(),
             next_serial: 0,
             scratch: Vec::new(),
             uniform_slots: HashMap::new(),
@@ -193,7 +200,34 @@ impl DrawManagerCore {
         self.reclaimed.remove(&handle)
     }
 
+    // Object* が初回の end で受け取り、Drop で使う
+    pub(crate) fn dropped_regions(&self) -> DroppedRegions {
+        self.dropped.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reclaimed_len(&self) -> usize {
+        self.reclaimed.len()
+    }
+
     // ---- end_frame（GpuContext）が使う ----
+
+    // 捨てられた Object* の領域のうち、まだヒープにあるものを返す。uniform の要素は空きに戻す
+    // GC で回収済みのものは、回収の記録を消すだけにする（receive_reclaimed の後に呼ぶ）
+    pub(crate) fn take_dropped(&mut self) -> Vec<(SpaceKind, GpuAllocation)> {
+        let dropped = std::mem::take(&mut *self.dropped.lock().unwrap_or_else(PoisonError::into_inner));
+
+        dropped
+            .into_iter()
+            .filter(|&(_, handle)| {
+                if let Some((shader, slot)) = self.uniform_owners.remove(&handle) {
+                    self.release_uniform_slot(shader, slot);
+                }
+
+                !self.reclaimed.remove(&handle)
+            })
+            .collect()
+    }
 
     pub(crate) fn receive_reclaimed(&mut self, handles: impl IntoIterator<Item = GpuAllocation>) {
         for handle in handles {

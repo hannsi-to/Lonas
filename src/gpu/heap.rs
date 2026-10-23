@@ -54,6 +54,7 @@ impl Heap {
         self.spaces.get(&kind).map(|space| &space.buffer)
     }
 
+    // TAA を使わないフレームは None（呼び出し側は現在のものを置く）
     pub(crate) fn previous_buffer(&self, kind: SpaceKind) -> Option<&wgpu::Buffer> {
         self.previous.get(&kind)
     }
@@ -126,7 +127,10 @@ impl Heap {
 
         // TAA を使うサーフェスがあれば、転送の前にインスタンスの現在の値を前のフレーム用へ写す（§2）
         // このフレームで確保し直したインスタンスは位置が変わるため、そのフレームだけ前の値が合わない
-        if keep_previous_instances {
+        // 使わないフレームは捨てる。古い値を残すと、TAA を切った後も前のフレームとしてバインドされ続ける
+        if !keep_previous_instances {
+            self.previous.clear();
+        } else {
             for (&kind, space) in self.spaces.iter().filter(|(kind, _)| matches!(kind, SpaceKind::Instance2D | SpaceKind::Instance3D)) {
                 let size = space.buffer.size();
                 let previous = self.previous.entry(kind).or_insert_with(|| create_buffer(device, "Lonas previous instances", size, space.usage));
@@ -166,8 +170,24 @@ impl Heap {
         }
     }
 
+    // 捨てられた Object* の領域を解放する（§6 解放：Drop の知らせ）
+    pub(crate) fn release(&mut self, kind: SpaceKind, handle: GpuAllocation) {
+        let Some(space) = self.spaces.get_mut(&kind) else { return };
+
+        space.gc.forget(handle);
+
+        if space.memory.contains(handle) {
+            space.memory.free(handle);
+        }
+    }
+
     pub(crate) fn take_reclaimed(&mut self, manager: ManagerId) -> Vec<GpuAllocation> {
         self.spaces.values_mut().flat_map(|space| space.gc.take_reclaimed(manager)).collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn contains(&self, kind: SpaceKind, handle: GpuAllocation) -> bool {
+        self.spaces.get(&kind).is_some_and(|space| space.memory.contains(handle))
     }
 
     // テストで GPU 上の中身を読み戻す。offset と count は要素の数
@@ -247,4 +267,30 @@ fn buffer_size(size: u64) -> u64 {
 
 fn create_buffer(device: &wgpu::Device, label: &str, size: u64, usage: wgpu::BufferUsages) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor { label: Some(label), size: buffer_size(size), usage, mapped_at_creation: false })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::tests::sample_config;
+    use crate::gpu::GpuContext;
+
+    #[test]
+    fn previous_instances_are_dropped_when_taa_is_off() {
+        let Ok(gpu) = GpuContext::new_headless(sample_config()) else { return };
+        let device = gpu.device();
+        let mut heap = Heap::new(&sample_config());
+        heap.space(device, SpaceKind::Instance2D);
+
+        let process = |heap: &mut Heap, frame, keep| {
+            let mut encoder = device.create_command_encoder(&Default::default());
+            heap.process(device, &mut encoder, &mut [], frame, keep);
+        };
+
+        process(&mut heap, 0, true);
+        assert!(heap.previous_buffer(SpaceKind::Instance2D).is_some());
+        // TAA を切ったフレームでは、古い前のフレームの値を残さない
+        process(&mut heap, 1, false);
+        assert!(heap.previous_buffer(SpaceKind::Instance2D).is_none());
+    }
 }

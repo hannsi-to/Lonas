@@ -216,6 +216,58 @@ fn reclaimed_object_is_uploaded_again() {
 }
 
 #[test]
+fn dropped_object_is_freed_at_end_frame() {
+    let Some(mut gpu) = headless(sample_config()) else { return };
+    let mut resources = ResourceManager::new();
+    let layout = VertexLayout::PositionColor;
+    let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), layout);
+    let mut object = new_triangle(&gpu, MemoryUpdateType::Static);
+
+    gpu.begin_frame();
+    object.begin();
+    triangle(&mut object, 0.0);
+    object.end(&mut manager);
+    let [vertex, index, instance] = object.core.handles().unwrap();
+    // end したフレームのうちに捨てても、そのフレームの描画の後で解放する
+    drop(object);
+    end_frame(&mut gpu, &mut resources, &mut manager);
+
+    let heap = gpu.heap();
+    assert!(!heap.contains(SpaceKind::Vertex(layout), vertex));
+    assert!(!heap.contains(SpaceKind::Index, index));
+    assert!(!heap.contains(SpaceKind::Instance2D, instance));
+}
+
+#[test]
+fn dropping_reclaimed_object_clears_the_record() {
+    let mut config = sample_config();
+    config.gc_unused_frames = 2;
+
+    let Some(mut gpu) = headless(config) else { return };
+    let mut resources = ResourceManager::new();
+    let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), VertexLayout::PositionColor);
+    let mut object = new_triangle(&gpu, MemoryUpdateType::Static);
+
+    gpu.begin_frame();
+    object.begin();
+    triangle(&mut object, 0.0);
+    object.end(&mut manager);
+    end_frame(&mut gpu, &mut resources, &mut manager);
+
+    for _ in 0..2 {
+        gpu.begin_frame();
+        end_frame(&mut gpu, &mut resources, &mut manager);
+    }
+
+    assert_eq!(manager.core.reclaimed_len(), 3);
+    // 回収済みの Object を捨てると、回収の記録が消える（ヒープは二重に解放しない）
+    drop(object);
+    gpu.begin_frame();
+    end_frame(&mut gpu, &mut resources, &mut manager);
+    assert_eq!(manager.core.reclaimed_len(), 0);
+}
+
+#[test]
 fn indices_come_from_topology_or_index_calls() {
     let Some(mut gpu) = headless(sample_config()) else { return };
     let mut resources = ResourceManager::new();

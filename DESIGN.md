@@ -253,6 +253,10 @@ pub struct MemoryCapacity {
 - `static_compaction_threshold` が 0.0〜1.0 の範囲外
 - `dynamic_growth_factor` が 1.0 以下（拡張しても容量が増えない）
 - `staging_chunk_size` が 0、または 4 の倍数でない（`copy_buffer_to_buffer` の制約）
+- `BindingConfig` の 2 つの項目が同じ番号（group と binding の組）
+- `texture_atlas` の `initial_layers` が 0、または `max_layers` を超える。`mip_level_count` が 0、またはアトラスの大きさから作れる段数を超える
+- `taa` の `history_blend_min` / `history_blend_max` が 0.0〜1.0 の範囲外、または min > max
+- アダプターの上限による検査（アトラスの大きさなど）は `LonasError::LimitExceeded` を返す
 
 
 ---
@@ -263,50 +267,57 @@ pub struct MemoryCapacity {
 
 ```rust
 struct ObjectCore<I> { // I = Instance2D / Instance3D
+    id: ObjectId,                             // InstanceId に入れる、この Object* の識別子（§7）
+    frame: FrameClock,                        // GpuContext と共有するフレーム番号（§9）。new で受け取る
+
     // 設定。None は未指定で、end の時点で LonasConfig の *_when_unset に解決する（§3）。DrawManager* が値を写して持つ
     shader: Option<ShaderId>,
     texture: Option<TextureId>,               // None ならテクスチャ未指定の画素（§11 TextureAtlas）
-    camera_id: Option<CameraId>,              // None なら DrawManager の既定カメラ
+    camera: Option<CameraId>,                 // None なら DrawManager の既定カメラ
     blend: Option<Blend>,
     topology: Option<Topology>,
     cull_mode: Option<CullMode>,
     memory_update_type: Option<MemoryUpdateType>, // None のまま end したら panic（§6）
-    manager_id: Option<ManagerId>,            // 初回 end で紐づいた DrawManager
+    manager: Option<ManagerId>,               // 初回 end で紐づいた DrawManager
 
     // 頂点・インデックス。GPU に載っている内容の CPU 側の写し。vertex* / index で比較しながら上書き（§1）
     vertices: Vec<Vertex>,
     vertex_cursor: usize,                     // begin で 0 に戻す書き込み位置
+    vertex_dirty: Option<Range<u32>>,         // そのフレームで変わった頂点の最小〜最大（§2）
+    positions_changed: bool,                  // 頂点の位置が変わったか（境界・Polygon のインデックスの作り直し、§10）
+    elements_written: VertexElements,         // 頂点の要素をどこまで書いたか（§10 VertexLayout の警告）
     indices: Vec<u32>,                        // index() を呼ばなければ topology から生成（§10）
     index_cursor: usize,
+    index_dirty: Option<Range<u32>>,          // インデックスも同じ
+    explicit_indices: bool,                   // そのフレームで index() を呼んだか（§2・§10）
+    generated_for: Option<(Topology, usize)>, // 最後に自動で作ったインデックスの元（topology と頂点数）
 
     instances: InstanceSlots<I>,              // §7
+    texture_changed: bool,                    // テクスチャが変わったら全インスタンスの texture_slot を書き直す
     uniform: Vec<u8>,                         // 前の値（常に保持、§11 uniform）
+    uniform_changed: bool,
+    uniform_slot: Option<(ShaderId, u32)>,    // uniform の配列の要素。DrawManager が end で割り当てる。None なら要素 0（§6 uniform の領域）
 
+    allocations: Option<Allocations>,         // 頂点 / インデックス / インスタンスの GpuAllocation と確保した数（§6）
+    dropped: Option<(DroppedRegions, [SpaceKind; 3])>, // Drop で領域を知らせる先（§6 解放）。初回 end で受け取る
+    auto_bounds: [f32; 4],                    // 頂点から求めた境界（中心 xyz と半径）。頂点の位置が変わったフレームでのみ求め直す（§10）
 
-    vertex_dirty_range: Option<Range<u32>>,   // そのフレームで変わった頂点の最小〜最大（§2）
-    index_dirty_range: Option<Range<u32>>,    // インデックスも同じ
-    uses_explicit_indices: bool,              // そのフレームで index() を呼んだか（§2・§10）
-
-    instance_id_owner: ObjectId,              // InstanceId に入れる、この Object* の識別子（§7）
-    uniform_slot: Option<u32>,                // uniform の配列の要素の番号。DrawManager が end で割り当てる。None なら要素 0（§6 uniform の領域）
-    frame: Arc<AtomicU64>,                    // GpuContext と共有するフレーム番号（§9）。new で受け取る
-    frame_state: FrameState,                  // 最後に begin / end を呼んだフレーム番号（§2）
-
-    allocations: ObjectAllocations,           // 頂点 / インデックス / インスタンスの GpuAllocation（§6）
-    dirty: DirtyFlags,                        // 頂点 / インデックス / 設定 / インスタンス / uniform の変更
-    warned: WarnedFlags,                      // 一度だけ出す警告を出したか（§10 topology・VertexLayout、§7）
-    instance_growth: InstanceGrowth,          // 前フレームのインスタンス数と連続増加の回数（§7）
+    warned: HashSet<&'static str>,            // 一度だけ出す警告を出したか（§3・§7・§10）
+    previous_live_instances: usize,           // 前フレームのインスタンス数と連続増加の回数（§7）
+    growth_streak: u32,
+    begun_frame: Option<u64>,                 // 最後に begin / end を呼んだフレーム番号（§2）
+    ended_frame: Option<u64>,
 }
 
 pub struct Object2D {
     core: ObjectCore<Instance2D>,
     layer: Option<i32>,                       // None なら LonasConfig::layer_when_unset
-    bounding_circle: Option<BoundingCircle>,  // None なら頂点から自動で計算（culling_2d が true のとき、§10）
+    bounding_circle: Option<(Vector2f, f32)>, // 中心と半径。None なら頂点から自動で計算（culling_2d が true のとき、§10）
 }
 
 pub struct Object3D {
     core: ObjectCore<Instance3D>,
-    bounding_sphere: Option<BoundingSphere>,  // None なら頂点から自動で計算（§10）
+    bounding_sphere: Option<(Vector3f, f32)>, // 中心と半径。None なら頂点から自動で計算（§10）
 }
 ```
 
@@ -373,6 +384,7 @@ impl DrawManager2D { // DrawManager3D も同じ（Camera3D を使う）
     pub fn remove_camera(&mut self, id: CameraId);
     pub fn camera(&self, id: CameraId) -> &Camera2D;
     pub fn camera_mut(&mut self, id: CameraId) -> &mut Camera2D;
+    pub fn vertex_layout(&self) -> VertexLayout; // new で指定した頂点の並び方
 }
 
 impl Object2D { // Object3D も同じ
@@ -394,7 +406,7 @@ impl Object2D { // Object3D も同じ
 
 - 大きな GPU バッファをまとめて確保し、その中から各 `Object*` に領域を **部分割り当て** する
 - `Object*` が持つのは領域を指すハンドル（`GpuAllocation`）のみ
-- 2D / 3D で同じヒープを共有する（§5 の共通化方針）
+- 2D / 3D で同じヒープ（`GpuContext` が持つ）を使う。ただしメモリ空間は要素の大きさごとに分かれるため、`Instance2D` と `Instance3D` は別の空間になる（§6 用途ごとのメモリ空間）
 
 ### Static / Dynamic の区別
 
@@ -520,6 +532,8 @@ Blender の Vulkan バックエンドが使う VMA（Vulkan Memory Allocator）�
 
 #### メタデータは CPU 側に持つ
 
+**段階 6 から、大きさ・位置はすべて要素の数で数える（§6 用途ごとのメモリ空間）。**以下の定数もバイトではなく要素の数として使う。
+
 GPU バッファの中にはブロックのヘッダを書き込めないため、VMA の仮想割り当てと同様に、**ブロック情報はすべて CPU 側に持つ**。
 GPU バッファは「オフセットとサイズで区切られた領域」としてのみ扱う。
 
@@ -530,8 +544,8 @@ struct TlsfAllocator {
     first_level_bitmap: u32,        // 空きブロックがある第 1 レベルのビット
     second_level_bitmaps: [u32; FIRST_LEVEL_COUNT], // 第 1 レベルごとの第 2 レベルのビット
     free_heads: [[Option<u32>; SECOND_LEVEL_COUNT]; FIRST_LEVEL_COUNT], // サイズクラスごとの空きリストの先頭
-    last_physical_block: u32,       // 領域の末尾のブロック（拡張時に使う）
-    alignment: u64,                 // アラインメント（4 バイト）
+    last_physical_block: Option<u32>, // 領域の末尾のブロック（拡張時に使う）。容量 0 なら None
+    alignment: u64,                 // アラインメント（段階 6 から 1 要素）
 }
 
 struct Block {
@@ -555,13 +569,13 @@ struct Block {
 | 定数 | 値 | 意味 |
 |---|---|---|
 | `SLI` | 5（`SECOND_LEVEL_COUNT` = 32） | VMA と同じ。サイズクラス内の無駄は最大約 1/32（約 3%） |
-| `SMALL_SIZE` | 256 バイト | これ未満は線形に分類 |
-| `FIRST_LEVEL_COUNT` | 32 | 2^39 バイト（512GB）未満のブロックを扱える |
-| `MIN_BLOCK_SIZE` | 16 バイト | 分割した残りがこれ未満なら分割せず、確保したブロックに含める |
+| `SMALL_SIZE` | 256 | これ未満は線形に分類 |
+| `FIRST_LEVEL_COUNT` | 32 | 2^39 要素未満のブロックを扱える |
+| `MIN_BLOCK_SIZE` | 16 | 分割した残りがこれ未満なら分割せず、確保したブロックに含める |
 
 #### 確保
 
-1. サイズを 4 バイトの倍数に切り上げる（`copy_buffer_to_buffer` の制約）
+1. サイズをアラインメント（1 要素）の倍数に切り上げる。バイトに直したときの 4 バイトの制約は、頂点・インデックス・インスタンスの要素の大きさがどれも 4 の倍数であることで満たす
 2. サイズを **次のサイズクラスの境界まで切り上げて** `fl` / `sl` を求める。これにより、見つかったクラスのブロックは必ず要求サイズ以上になる（リストを探索しない）
 3. `second_level_bitmaps[fl]` の `sl` 以上のビットから最下位ビットを探す（`trailing_zeros`）。なければ `first_level_bitmap` の `fl + 1` 以上から探す
 4. 見つかったブロックを空きリストから外す
@@ -613,11 +627,19 @@ struct Block {
   - Dynamic 領域はコピーしない
   - 却下案：新しいバッファへ全体をコピーして差し替える（Dynamic 部分まで毎回コピーし、作業中にメモリが一時的に 2 倍必要になる）
 
-### 解放：GC 方式
+### 解放：Drop の知らせと GC 方式
+
+**決定（通しレビュー）：`Object*` を捨てたときは、`Drop` で `DrawManager*` に知らせ、次の `end_frame` で解放する。**
+
+- `Object*` は `GpuContext` への参照を持たないため、`Drop` で直接は解放できない。そこで初回の `end` で `DrawManager*` から「捨てた領域を入れる箱」（`Arc<Mutex<Vec<(SpaceKind, GpuAllocation)>>>`）を受け取り、`Drop` で自分の頂点 / インデックス / インスタンスの領域を入れる
+- `end_frame` の後片付け（§9 の 8）で、渡された `DrawManager*` の箱から取り出し、ヒープの領域と uniform の要素を解放する。そのフレームの描画の後のため、同じフレームで `end` してから捨てても問題ない
+- GC で回収済みの領域なら、回収済みの一覧から消すだけにする（二重に解放しない）。これにより回収済みの一覧が増え続けない
+- ロックに触れるのは `Drop` と `end_frame` だけで、毎フレームの `end` はロックしない
+- 一度も `end` していない `Object*` は領域を持たないため、何もしない
 
 **決定：一定フレーム `end` されなかった `Object*` の領域を回収する。**
 
-- `Object*` は `GpuContext` への参照を持たないため、`Drop` では直接解放できない。そこで `GpuContext` が各領域の最終 `end` フレームを記録し、`end_frame` で期限切れの領域を回収する
+- 捨てずに使わなくなった `Object*`（`end` を呼ばなくなっただけ）の領域を取り戻すため。`GpuContext` が各領域の最終 `end` フレームを記録し、`end_frame` で期限切れの領域を回収する
 - 回収までのフレーム数は `LonasConfig` で指定する（§3）
 - 回収された `Object*` が再び `end` された場合は、初回と同じく領域を確保し直す
 - 回収は `Object*` 単位で行い、その `Object*` の頂点 / インデックス / インスタンスの領域と uniform の要素をまとめて回収する
@@ -630,7 +652,7 @@ struct Block {
 
 - ハンドル（`GpuAllocation`）には発行元の `ManagerId` が入っている。`GpuContext` は回収したハンドルを `ManagerId` ごとに溜めておき、その `DrawManager*` が `end_frame` に渡されたときに渡す
 - `Object*::end` は、自分のハンドルが回収済みかを `DrawManager*` に問い合わせる。回収済みなら初回と同じく確保し直し、CPU 側の写し（§4）からすべてを転送する
-- `DrawManager*` は、回収済みのハンドルが再び `end` されるか、ハンドルが再利用されない期間を過ぎるまで、回収済みの一覧を持つ
+- `DrawManager*` は、回収済みのハンドルが再び `end` されるか、その `Object*` が捨てられる（`Drop` の知らせ）まで、回収済みの一覧を持つ
 - 却下案：ハンドルに世代を持たせ、`Arc` で共有する表で判定する（同時アクセスのためにロックかアトミックの配列が必要になる）
 
 ### DrawManager 経由のアクセス
@@ -653,9 +675,9 @@ GpuContext::end_frame
 
 ```rust
 enum HeapRequest {
-    Allocate   { handle: GpuAllocation, space: SpaceKind, size: u64, update: MemoryUpdateType },
+    Allocate   { handle: GpuAllocation, space: SpaceKind, count: u64, update: MemoryUpdateType }, // count は要素の数
     // 大きさや memory_update_type が変わった。中身は Write で書き直す（段階 5 で追加）
-    Reallocate { handle: GpuAllocation, space: SpaceKind, size: u64, update: MemoryUpdateType },
+    Reallocate { handle: GpuAllocation, space: SpaceKind, count: u64, update: MemoryUpdateType },
     Write      { handle: GpuAllocation, space: SpaceKind, offset: u64, chunk: u32, range: Range<u64> }, // staging バッファのチャンクと範囲
     WriteUniform { shader: ShaderId, slot: u32, chunk: u32, range: Range<u64> }, // uniform の要素（§6 uniform の領域）
 }
@@ -665,14 +687,16 @@ struct DrawManagerCore {
     heap_requests: Vec<HeapRequest>,
     draw_commands: Vec<DrawCommand>,
     reclaimed: HashSet<GpuAllocation>, // GC で回収されたハンドル（§6 回収の通知）
+    dropped: DroppedRegions,         // 捨てられた Object* の領域（§6 解放：Drop の知らせ）
     touched: Vec<(SpaceKind, GpuAllocation)>, // そのフレームで end された Object* の領域。描かないフレームでも GC に回収されないように知らせる（段階 5 で追加）
     uniform_slots: HashMap<ShaderId, UniformSlots>, // シェーダーごとの uniform の要素の空き番号（§6 uniform の領域）
+    uniform_owners: HashMap<GpuAllocation, (ShaderId, u32)>, // 回収・Drop のときに uniform の要素を空きに戻すため、インスタンスの領域のハンドルから引く
 }
 ```
 
 - `MemorySpace` は頂点 / インデックス / インスタンス（§6 用途ごとのメモリ空間）。uniform は `WriteUniform` で書き、`end_frame` で必要な要素数までバッファを作る・大きくする
 - `Object*::end` は変更があったときだけ、`VertexLayout`（§10）に合わせて詰めながら staging バッファへ書き込み、その範囲を `Write` に入れる。変更がなければ何も書かない
-- `end_frame` は、コピー元とコピー先がともに連続する `Write` をまとめて 1 回の `copy_buffer_to_buffer` にする
+- **決定（通しレビュー）：`Write` は 1 つずつ `copy_buffer_to_buffer` にし、まとめない。**staging バッファへの書き込み位置は map の制約で 8 バイト境界に揃えるため、コピー元が連続することが少なく、まとめてもほとんど効かない
 - 却下案：要求に `Object*` のデータへの参照を持たせる（`end_frame` まで `Object*` を借用し続けることになり、`begin` で `Object*` を書き換える使い方と両立しない）
 
 ---
@@ -882,14 +906,14 @@ gpu.end_frame(&mut resource_manager, &mut [
 2. **リソースの反映**：`ResourceManager` の未反映の登録・解除を GPU に反映する（シェーダーの作成、アトラスへの配置・転送・ミップマップ、解除したものとそのパイプラインの破棄、§11）
 3. **ヒープの処理**（渡された全 `DrawManager*` をまとめて 1 回）：
    1. 各 `DrawManager*` の staging バッファの map を解除する
-   2. `HeapRequest` を処理する：解放 → 確保（必要なら Dynamic 領域の拡張、uniform のバッファの作成・拡張）→ Static 領域のコンパクション（しきい値を超えた場合、§6）
-   3. TAA のサーフェスに描く `DrawManager*` について、インスタンスの現在の値を前のフレーム用の領域へコピーする（§2）
+   2. `HeapRequest` を処理する：確保・確保し直し（必要なら Dynamic 領域の拡張）→ Static 領域のコンパクション（しきい値を超えた場合、§6）。解放は要求ではなく、8 の後片付けで行う
+   3. TAA のサーフェスがあれば、インスタンスのメモリ空間の現在の値を、まるごと前のフレーム用のバッファへコピーする（§2）。TAA のサーフェスがなければ前のフレーム用のバッファを捨てる
    4. staging バッファからヒープへコピーする（`copy_buffer_to_buffer`、§6 転送）
 4. **カメラ**：各 `DrawManager*` のカメラの行列を計算して転送する（TAA のジッターを含む、§11 Camera）
-5. **Compute**：視界の外・非表示のインスタンスを省き、並べ替え、インスタンス番号のリストと描画の引数を書き込む（§10）
-6. **描画**（渡されたサーフェスごと）：描画先の取得（取得できなければ飛ばす、§9 リサイズとフレームスキップ）→ `DrawManager*` ごとに RenderPass で実行 → アンチエイリアスの後処理（resolve / FXAA / TAA、§11）
+5. **Compute**：uniform のバッファを作る・大きくして値を書き込む（§6 uniform の領域）。視界の外・非表示のインスタンスを省き、並べ替え、インスタンス番号のリストと描画の引数を書き込む（§10）
+6. **描画**（渡されたサーフェスごと）：描画先の取得（取得できなければ飛ばす、§9 リサイズとフレームスキップ）→ 大きさ・方式が変わっていれば深度バッファなどの描画先を作り直す → `DrawManager*` ごとに RenderPass で実行 → アンチエイリアスの後処理（resolve / FXAA / TAA、§11）
 7. **送信**：`submit` を 1 回行い、各サーフェスを `present` する
-8. **後片付け**：各 `DrawManager*` のコマンドと要求をクリアする。使った staging バッファのチャンクを `map_async` で map し直す。GC で期限切れの領域を回収し、回収したハンドルを `DrawManager*` ごとに溜める（§6 回収の通知）。使われなくなったパイプラインを捨てる（§10）
+8. **後片付け**：各 `DrawManager*` のコマンドと要求をクリアする。使った staging バッファのチャンクを `map_async` で map し直す。GC で期限切れの領域を回収し、回収したハンドルを `DrawManager*` ごとに溜める（§6 回収の通知）。渡された `DrawManager*` に溜まった回収済みのハンドルを渡し、捨てられた `Object*` の領域を解放する（§6 解放：Drop の知らせ）。使われなくなったパイプラインを捨てる（§10）
 
 責務の分担：
 
@@ -929,6 +953,7 @@ gpu.end_frame(&mut resource_manager, &mut [
 | `uniform()` に渡した型の大きさがシェーダーの uniform の要素と違う、またはシェーダーに uniform の配列がない | `end_frame` で panic（§11 uniform） |
 | 別の `ResourceManager` の `ShaderId` / `TextureId` を使う、または `Object*` の ID と別の `ResourceManager` を `end_frame` に渡す | `end_frame` で panic（§11） |
 | 同じサーフェスを `end_frame` の `SurfaceDraw` に 2 回以上渡す | `end_frame` で panic（§11 複数ウィンドウ） |
+| 存在しない `SurfaceId` を `resize` / `set_present_mode` / `set_anti_aliasing` / `end_frame` などに渡す | その関数で panic |
 | `index()` も `topology()` も呼ばずに `end` | `Object*::end` で panic（§10） |
 | `DrawManager*` に積んだのに `end_frame` に渡さなかった | 次のフレームでその `DrawManager*` に `Object*::end` が呼ばれた時点で panic（前のフレームのコマンドが残っている） |
 
@@ -1366,6 +1391,9 @@ let texture_id: TextureId = resource_manager.register_texture(encoded_bytes)?;  
 let texture_id: TextureId = resource_manager.register_texture_rgba(width, height, &rgba_bytes)?; // RGBA の生データ
 resource_manager.unregister_shader(shader_id);
 resource_manager.unregister_texture(texture_id);
+resource_manager.is_shader_valid(shader_id);  // 登録解除済み・別の ResourceManager の ID なら false
+resource_manager.is_texture_valid(texture_id);
+let (width, height) = resource_manager.texture_size(texture_id); // 登録したテクスチャの大きさ（ピクセル）
 
 object.shader(shader_id);
 
@@ -1462,7 +1490,7 @@ let color = textureSample(atlas, atlas_sampler, uv, t.layer);
 
 - `texture_slot` は `TextureId` の番号（§11 ResourceManager の ID）。`ResourceManager` が登録の時点で発行するため、`Object*::end` の時点で分かる
 - アトラス上の配置は `end_frame` で決まる（§11 GPU との分担）。`GpuContext` は配置を決めたときに `texture_rects` の該当する番号を書き込む。そのため、インスタンスにアトラス上の範囲を直接入れることはできない
-- `texture_rects` は番号の最大値まで大きくする（大きくするときは新しいバッファにコピー）。登録を解除した番号は、再利用されるまで古い値を残す（無効な `TextureId` を使う `Object*` は `end` で panic するため、読まれない、§11 登録解除）
+- `texture_rects` は番号の最大値まで大きくする（大きくするときは新しいバッファにコピー）。登録を解除した番号は、再利用されるまで古い値を残す（無効な `TextureId` を使う `Object*` は `end_frame` で panic するため、読まれない、§11 登録解除）
 - バッチング（§10）で別々のテクスチャの `Object*` が 1 回の DrawCall にまとまっても、インスタンスごとに区別できる
 - 頂点には手を加えないため、テクスチャを変えても頂点（Static を含む）を書き直さなくてよい。書き直すのはインスタンス（常に Dynamic、§6）の `texture_slot` のみ
 - インスタンス 1 つあたり 8 バイト増える（`texture_slot` と `uniform_index`）
@@ -1485,7 +1513,7 @@ let color = textureSample(atlas, atlas_sampler, uv, t.layer);
 **決定：棚（shelf）方式で詰め込む。**
 
 - アトラスを高さごとの棚に分け、各棚に左から順にテクスチャを置く。登録するテクスチャの高さに合う棚がなければ、新しい棚を下に作る
-- 登録解除で空いた場所は同じ棚の中で再利用する。棚が空になったら棚ごと解放する
+- 登録解除で空いた場所は同じ棚の中で再利用する。一番下の棚が空になったら棚ごと解放する（途中の棚は空になっても残し、高さが収まる別のテクスチャに使う）
 - アトラスの詰め直しは行わない（配置済みのテクスチャの位置は変わらない）
 - 配置は `end_frame` で `GpuContext` が決める（§11 GPU との分担）
 - 却下案：ギロチン方式（大きさがばらばらなときに詰め込み効率はよいが、解除時の結合が複雑）
@@ -1545,7 +1573,7 @@ pub struct TextureAtlasConfig {
 **決定：uniform を渡す関数を用意する。**高頻度で呼ばれる可能性があるため、前の値を保持して比較し、**同値の場合は無視する**。
 
 - 同値の場合に警告は出さない（高頻度で呼ぶことを想定した関数のため）
-- uniform は用途別メモリ空間の uniform 領域に、`ShaderId` ごとの配列として置く（§6 uniform の領域）
+- uniform は用途別のメモリ空間とは別に、`DrawManager*` × `ShaderId` ごとの配列として置く（§6 uniform の領域）
 - **決定：uniform は `Object*` ごとに渡す。渡せる型は `bytemuck` の `Pod` を満たす型。**
 
 ```rust
@@ -1745,7 +1773,7 @@ pub enum LonasError {
     UnsupportedAdapter { missing: &'static str }, // 必須の機能がない（§8。VERTEX_STORAGE / COMPUTE_SHADERS / INDIRECT_EXECUTION / INDIRECT_FIRST_INSTANCE）
     RequestDevice(wgpu::RequestDeviceError),
     CreateSurface(wgpu::CreateSurfaceError),
-    DeviceLost { reason: String },
+    DeviceLost { reason: String }, // 今は返す API がない（§12 デバイスの喪失）
     UnsupportedSurfaceFormat,          // sRGB のフォーマットに対応していない（§11 サーフェスのフォーマット）
     UnsupportedSampleCount { requested: u32, supported: Vec<u32> },
     UnsupportedPresentMode(PresentMode),  // §8
@@ -1860,7 +1888,7 @@ Color::WHITE   Color::BLACK   Color::TRANSPARENT
 
 ```rust
 let (mut gpu, main_surface) = GpuContext::new(window, width, height, config)?;
-let sub_surface: SurfaceId = gpu.add_surface(other_window)?;
+let sub_surface: SurfaceId = gpu.add_surface(other_window, width, height)?;
 
 gpu.begin_frame();
 // 各 Object* の end ...
@@ -2015,11 +2043,19 @@ gpu.set_anti_aliasing(surface_id, AntiAliasing::Taa)?;
 | フォーマット | `Depth32Float` | どの環境でも使え、精度が最も高い。ステンシルは使わない（§10 でステンシルの技法は却下）ため不要 |
 | 深度の向き | **Reversed-Z**（手前を 1.0、奥を 0.0） | 浮動小数点の精度が奥で落ちる問題を打ち消し、遠くのちらつき（Z ファイティング）を大幅に減らせる。`Camera3D` の投影行列と比較関数（`Greater`）を合わせるだけで、追加の負担はない |
 | 持ち方 | サーフェスごとに 1 つ。同じサーフェスの `DrawManager3D` 間で共有し、各 `DrawManager3D` の最初にクリア（§10） | `DrawManager3D` ごとに持つよりメモリが少ない |
-| リサイズ時 | `resize()` では大きさを記録するだけにし、次の `begin_frame` で大きさが変わっていれば作り直す | 1 フレームにリサイズのイベントが何度来ても、作り直しは 1 回で済む |
+| リサイズ時 | `resize()` では大きさを記録するだけにし、次のフレームで大きさが変わっていれば作り直す（サーフェスは `begin_frame`、深度バッファは `end_frame` で描く前） | 1 フレームにリサイズのイベントが何度来ても、作り直しは 1 回で済む |
 | 2D | 持たない（§10） | |
 
 ---
 
 ## 12. 未決事項
 
-なし。新たに出た未決事項はここに追加する。
+新たに出た未決事項はここに追加する。
+
+### デバイスの喪失（通しレビューで追加）
+
+ドライバーのリセットなどで GPU のデバイスが失われたときの扱いが決まっていない。`LonasError::DeviceLost` はあるが、返す API がない。
+
+- 対応するには、`end_frame` を `Result` にするか、失われたことを問い合わせる関数を足すなどの API の変更が要る
+- 復旧するには、シェーダー・アトラス・ヒープなどの GPU 上のリソースをすべて作り直す必要がある（`Object*` の CPU 側の写し（§4）から再転送できるが、`GpuContext` が `Object*` を知らない）
+- 決まるまでは wgpu の既定の挙動（panic など）のままとする

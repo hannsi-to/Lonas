@@ -168,12 +168,9 @@ impl Renderer {
 
         self.write_uniforms(device, encoder, manager);
 
-        if let Some(texture) = manager.draw_commands.iter().find_map(|command| command.settings.texture) {
-            assert!(resources.owns_texture(texture), "別の ResourceManager の TextureId です");
-        }
-
         for command in &manager.draw_commands {
             if let Some(texture) = command.settings.texture {
+                assert!(resources.owns_texture(texture), "別の ResourceManager の TextureId です");
                 assert!(resources.is_texture_valid(texture), "登録解除済みの TextureId を使う Object があります");
             }
         }

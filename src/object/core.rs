@@ -6,7 +6,7 @@ use std::ops::Range;
 use super::instance_slots::{InstanceData, InstanceSlots, ObjectId};
 use super::topology::{self, Topology, Winding};
 use crate::config::{Blend, CullMode};
-use crate::draw::{CameraId, DrawCommand, DrawManagerCore, DrawSettings, HeapRequest, SpaceKind};
+use crate::draw::{CameraId, DrawCommand, DrawManagerCore, DrawSettings, DroppedRegions, HeapRequest, SpaceKind};
 use crate::gpu::GpuContext;
 use crate::gpu::frame::FrameClock;
 use crate::math::Vector3f;
@@ -95,6 +95,8 @@ pub(crate) struct ObjectCore<I> {
     uniform_slot: Option<(ShaderId, u32)>,
 
     allocations: Option<Allocations>,
+    // Drop で領域を知らせる先と、領域のメモリ空間（頂点・インデックス・インスタンス）。初回の end で受け取る（§6 解放）
+    dropped: Option<(DroppedRegions, [SpaceKind; 3])>,
     // 頂点から求めた境界（中心 xyz と半径）。頂点の位置が変わったフレームでのみ求め直す（§10）
     auto_bounds: [f32; 4],
 
@@ -107,6 +109,16 @@ pub(crate) struct ObjectCore<I> {
     // 最後に begin / end を呼んだフレーム番号（§2 begin / end の対応）
     begun_frame: Option<u64>,
     ended_frame: Option<u64>,
+}
+
+// 確保した領域を DrawManager* に知らせ、次の end_frame で解放させる（§6 解放：Drop の知らせ）
+impl<I> Drop for ObjectCore<I> {
+    fn drop(&mut self) {
+        let (Some(allocations), Some((dropped, spaces))) = (self.allocations, &self.dropped) else { return };
+        let handles = [allocations.vertex.handle, allocations.index.handle, allocations.instance.handle];
+
+        dropped.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extend(spaces.iter().copied().zip(handles));
+    }
 }
 
 impl<I: InstanceData> ObjectCore<I> {
@@ -144,6 +156,7 @@ impl<I: InstanceData> ObjectCore<I> {
             uniform_changed: false,
             uniform_slot: None,
             allocations: None,
+            dropped: None,
             auto_bounds: [0.0; 4],
             warned: HashSet::new(),
             had_leftover: false,
@@ -251,7 +264,10 @@ impl<I: InstanceData> ObjectCore<I> {
         self.ended_frame = Some(frame);
 
         match self.manager {
-            None => self.manager = Some(manager.id),
+            None => {
+                self.manager = Some(manager.id);
+                self.dropped = Some((manager.dropped_regions(), [SpaceKind::Vertex(manager.layout), SpaceKind::Index, I::SPACE]));
+            }
             Some(id) => assert_eq!(id, manager.id, "Object が初回とは別の DrawManager に渡されました"),
         }
 

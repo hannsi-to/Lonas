@@ -372,6 +372,10 @@ impl GpuContext {
             manager.staging.recall();
             manager.finish_frame();
             manager.receive_reclaimed(self.heap.take_reclaimed(manager.id));
+
+            for (kind, handle) in manager.take_dropped() {
+                self.heap.release(kind, handle);
+            }
         }
 
         self.frame.end();

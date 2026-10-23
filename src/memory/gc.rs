@@ -1,5 +1,5 @@
 // 一定フレーム end されなかった Object* の領域の回収（§6 解放：GC 方式・回収の通知）
-// Object* は GpuContext を知らないため Drop で解放できない。最後に end されたフレームを記録し、期限切れを回収する
+// 最後に end されたフレームを記録し、期限切れを回収する。捨てられた Object* の領域は Drop の知らせで先に解放される
 
 use std::collections::HashMap;
 
@@ -20,6 +20,11 @@ impl GcTracker {
     // そのフレームで end されたことを記録する
     pub(crate) fn touch(&mut self, handle: GpuAllocation, frame: u64) {
         self.last_used_frame.insert(handle, frame);
+    }
+
+    // 捨てられた Object* の領域を解放したときに、記録から消す
+    pub(crate) fn forget(&mut self, handle: GpuAllocation) {
+        self.last_used_frame.remove(&handle);
     }
 
     // unused_frames フレームの間 end されなかったハンドルを回収して返す

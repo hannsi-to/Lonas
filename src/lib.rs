@@ -13,3 +13,6 @@ pub mod resource;
 pub(crate) mod texture;
 pub mod vertex;
 pub mod wgsl;
+
+#[cfg(test)]
+mod send_check;
