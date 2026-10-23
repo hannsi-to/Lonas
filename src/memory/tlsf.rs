@@ -62,15 +62,12 @@ impl TlsfAllocator {
         self.capacity
     }
 
-    pub(crate) fn alignment(&self) -> u64 {
-        self.alignment
-    }
-
     pub(crate) fn offset(&self, id: BlockId) -> u64 {
         self.blocks[id as usize].offset
     }
 
     // 分割の残りが小さい場合は要求より大きくなることがある
+    #[cfg(test)]
     pub(crate) fn size(&self, id: BlockId) -> u64 {
         self.blocks[id as usize].size
     }

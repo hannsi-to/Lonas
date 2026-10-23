@@ -13,7 +13,6 @@ pub enum Visibility {
 }
 
 impl Visibility {
-    #[allow(dead_code)] // 段階 5（インスタンスの転送）で使う
     // GPU 上では u32（1 = Visible、0 = Hidden）
     const fn to_gpu(self) -> u32 {
         match self {
@@ -93,7 +92,6 @@ const _: () = assert!(size_of::<GpuInstance3D>() == crate::wgsl::INSTANCE_3D_SIZ
 
 impl Instance2D {
     // texture_slot / uniform_index は Lonas が付け足す（§11 UV の変換・uniform）
-    #[allow(dead_code)] // 段階 5（インスタンスの転送）で使う
     pub(crate) fn to_gpu(&self, texture_slot: u32, uniform_index: u32) -> GpuInstance2D {
         GpuInstance2D {
             color: self.color.to_linear(),
@@ -108,7 +106,6 @@ impl Instance2D {
 }
 
 impl Instance3D {
-    #[allow(dead_code)] // 段階 5（インスタンスの転送）で使う
     pub(crate) fn to_gpu(&self, texture_slot: u32, uniform_index: u32) -> GpuInstance3D {
         GpuInstance3D {
             transform: self.transform.to_cols_array(),

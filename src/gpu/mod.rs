@@ -1,8 +1,9 @@
-// GpuContext：device / queue / サーフェス・フレーム境界（§8・§9）
-// ヒープ・パイプライン・Compute のパスは段階 5 以降で足す
+// GpuContext：device / queue / サーフェス・ヒープ・フレーム境界（§6・§8・§9）
+// パイプライン・Compute のパスは段階 6 以降で足す
 
 mod features;
 pub(crate) mod frame;
+pub(crate) mod heap;
 mod surface;
 
 use std::collections::HashSet;
@@ -14,16 +15,20 @@ use crate::config::{AntiAliasing, Backend, LonasConfig, PresentMode};
 use crate::error::LonasError;
 use crate::math::Vector2f;
 use crate::resource::ResourceManager;
+use crate::draw::DrawManagerCore;
 use crate::{color::Color, memory::ManagerId};
 use frame::FrameClock;
+use heap::Heap;
 pub use surface::SurfaceId;
 use surface::SurfaceState;
 
-// end_frame に 2D / 3D の DrawManager* を混ぜて渡すためのトレイト（§9）。段階 5 で DrawManager2D / DrawManager3D が実装する
+// end_frame に 2D / 3D の DrawManager* を混ぜて渡すためのトレイト（§9）。DrawManager2D / DrawManager3D が実装する
 pub trait DrawManager: sealed::Sealed {}
 
 pub(crate) mod sealed {
-    pub trait Sealed {}
+    pub trait Sealed {
+        fn core(&mut self) -> &mut crate::draw::DrawManagerCore;
+    }
 }
 
 // サーフェスごとの描画（§9・§11 複数ウィンドウ）
@@ -42,6 +47,7 @@ pub struct GpuContext {
     queue: wgpu::Queue,
     config: LonasConfig,
     surfaces: Vec<SurfaceState>,
+    heap: Heap,
     frame: FrameClock,
     next_manager_id: u32,
     // Object*::new(&gpu) で発行するため、&self で増やせるようにする（§2）
@@ -118,6 +124,8 @@ impl GpuContext {
             .await
             .map_err(LonasError::RequestDevice)?;
 
+        let heap = Heap::new(&device, &config);
+
         Ok(Self {
             instance,
             adapter,
@@ -125,6 +133,7 @@ impl GpuContext {
             queue,
             config,
             surfaces: Vec::new(),
+            heap,
             frame: FrameClock::new(),
             next_manager_id: 0,
             next_object_id: AtomicU64::new(0),
@@ -182,9 +191,11 @@ impl GpuContext {
         }
     }
 
-    // §9 の end_frame の処理の順のうち、この段階では描画先の取得 → クリア → submit → present を行う
+    // §9 の end_frame の処理の順に行う。この段階ではヒープの処理と、描画先のクリアまで
     pub fn end_frame(&mut self, _resource_manager: &mut ResourceManager, surfaces: &mut [SurfaceDraw<'_, '_>]) {
-        if !self.frame.state().in_frame {
+        let state = self.frame.state();
+
+        if !state.in_frame {
             panic!("begin_frame の前に end_frame が呼ばれました");
         }
 
@@ -197,8 +208,24 @@ impl GpuContext {
             );
         }
 
-        // 6. 描画（渡されたサーフェスごと）
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Lonas frame") });
+
+        {
+            let mut managers: Vec<&mut DrawManagerCore> =
+                surfaces.iter_mut().flat_map(|draw| draw.draw_managers.iter_mut().map(|manager| manager.core())).collect();
+
+            // 1. 前のフレームの後片付け：map し直しが終わった staging バッファを空きに戻す
+            let _ = self.device.poll(wgpu::PollType::Poll);
+
+            for manager in managers.iter_mut() {
+                manager.staging.reclaim();
+            }
+
+            // 3. ヒープの処理
+            self.heap.process(&self.device, &mut encoder, &mut managers, state.number);
+        }
+
+        // 6. 描画（渡されたサーフェスごと）
         let mut acquired = Vec::new();
 
         for draw in surfaces.iter() {
@@ -233,11 +260,26 @@ impl GpuContext {
             self.queue.present(texture);
         }
 
+        // 8. 後片付け
+        self.heap.collect_garbage(state.number, self.config.gc_unused_frames);
+
+        for manager in surfaces.iter_mut().flat_map(|draw| draw.draw_managers.iter_mut().map(|manager| manager.core())) {
+            manager.staging.recall();
+            manager.finish_frame();
+            manager.receive_reclaimed(self.heap.take_reclaimed(manager.id));
+        }
+
         self.frame.end();
     }
 
     // 描画先を取得する。取得できない場合はそのサーフェスだけ飛ばす（§9 リサイズとフレームスキップ）
     fn acquire(&mut self, surface: SurfaceId) -> Option<wgpu::SurfaceTexture> {
+        // テストのウィンドウなしの GpuContext はサーフェスを持たないため、描かずにヒープの処理だけを行う
+        #[cfg(test)]
+        if self.surfaces.is_empty() {
+            return None;
+        }
+
         let state = self.surface_mut(surface);
 
         if !state.is_drawable() {
@@ -287,36 +329,36 @@ impl GpuContext {
         self.surfaces.get_mut(id.0 as usize).expect("存在しない SurfaceId です")
     }
 
-    // ---- 段階 5 以降で DrawManager* / Object* が使う ----
+    // ---- DrawManager* / Object* が使う ----
 
-    #[allow(dead_code)]
     pub(crate) fn issue_manager_id(&mut self) -> ManagerId {
         self.next_manager_id += 1;
 
         ManagerId(self.next_manager_id - 1)
     }
 
-    #[allow(dead_code)]
     pub(crate) fn issue_object_id(&self) -> u64 {
         self.next_object_id.fetch_add(1, Ordering::Relaxed)
     }
 
-    #[allow(dead_code)]
     pub(crate) fn frame_clock(&self) -> FrameClock {
         self.frame.clone()
     }
 
-    #[allow(dead_code)]
     pub(crate) fn device(&self) -> &wgpu::Device {
         &self.device
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn queue(&self) -> &wgpu::Queue {
         &self.queue
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
+    pub(crate) fn heap(&self) -> &Heap {
+        &self.heap
+    }
+
     pub(crate) fn config(&self) -> &LonasConfig {
         &self.config
     }

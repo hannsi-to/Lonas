@@ -135,16 +135,16 @@ src/
 
 **目的**：`Object*::end` から `end_frame` のヒープの処理まで、データが正しく GPU に載るところまで作る。まだ描かない。
 
-- [ ] `Object2D::new(&gpu)` / `Object3D::new(&gpu)`、`begin` / `end` の対応の判定（§2 begin / end の対応）
-- [ ] `vertex*` / `index` のその場比較と変更の範囲（§2・§4）
-- [ ] 三角形化：`TriangleList` / `TriangleFan` / `TriangleStrip` / `Polygon`（単調多角形分割）。頂点数が合わない場合の警告（§10 三角形化）
-- [ ] 設定の関数と同値の判定・警告（§3・§11 同値の設定の扱い）
-- [ ] `InstanceSlots`：スロットの再利用・世代・`InstanceId<I>`・変更の範囲（§7）。インスタンス数の増加の警告（§7）
-- [ ] `DrawManager2D` / `DrawManager3D`：`ManagerId`・カメラ・`CameraId` の検査（§5）
-- [ ] staging バッファ：チャンク・`mapped_at_creation`・`map_async` での再利用（§6 転送）
-- [ ] `HeapRequest` と `end` 時の更新条件の表のすべての行（§2 end 時の更新条件）
-- [ ] `end_frame` の段階 1〜3 と 8：チャンクの回収・ヒープの処理（確保・拡張・コンパクションのコピー・staging からのコピー）・GC と回収の通知（§9）
-- [ ] 誤用の panic（§9 の表のうち `Object*` / `DrawManager*` に関するもの）
+- [x] `Object2D::new(&gpu)` / `Object3D::new(&gpu)`、`begin` / `end` の対応の判定（§2 begin / end の対応）
+- [x] `vertex*` / `index` のその場比較と変更の範囲（§2・§4）
+- [x] 三角形化：`TriangleList` / `TriangleFan` / `TriangleStrip` / `Polygon`（単調多角形分割）。頂点数が合わない場合の警告（§10 三角形化）
+- [x] 設定の関数と同値の判定・警告（§3・§11 同値の設定の扱い）
+- [x] `InstanceSlots`：スロットの再利用・世代・`InstanceId<I>`・変更の範囲（§7）。インスタンス数の増加の警告（§7）
+- [x] `DrawManager2D` / `DrawManager3D`：`ManagerId`・カメラ・`CameraId` の検査（§5）
+- [x] staging バッファ：チャンク・`mapped_at_creation`・`map_async` での再利用（§6 転送）
+- [x] `HeapRequest` と `end` 時の更新条件の表のすべての行（§2 end 時の更新条件）
+- [x] `end_frame` の段階 1〜3 と 8：チャンクの回収・ヒープの処理（確保・拡張・コンパクションのコピー・staging からのコピー）・GC と回収の通知（§9）
+- [x] 誤用の panic（§9 の表のうち `Object*` / `DrawManager*` に関するもの）
 
 **終わりの条件**
 - 頂点を変えたフレームだけ `Write` が積まれ、範囲が変わった位置の最小〜最大になるテスト

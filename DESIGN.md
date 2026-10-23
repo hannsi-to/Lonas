@@ -263,7 +263,7 @@ pub struct MemoryCapacity {
 
 ```rust
 struct ObjectCore<I> { // I = Instance2D / Instance3D
-    // 設定。None は未指定で、end_frame で LonasConfig の *_when_unset に解決する（§3）
+    // 設定。None は未指定で、end の時点で LonasConfig の *_when_unset に解決する（§3）。DrawManager* が値を写して持つ
     shader: Option<ShaderId>,
     texture: Option<TextureId>,               // None ならテクスチャ未指定の画素（§11 TextureAtlas）
     camera_id: Option<CameraId>,              // None なら DrawManager の既定カメラ
@@ -413,6 +413,7 @@ impl Object2D { // Object3D も同じ
 ```
 
 - **既定値なし。**`memory_update_type()` を一度も呼ばずに `end` した場合は panic。Static / Dynamic で振る舞い（サイズ変更の可否）が大きく異なるため、ユーザーに必ず選ばせる
+- **決定（段階 5）：Static 領域の先頭に積めなくても、穴を詰めれば収まる場合は、panic せずに先に詰め直してから確保する**
 
 | | Static | Dynamic |
 |---|---|---|
@@ -490,7 +491,8 @@ GpuContext::end_frame
   └ submit 後、使い終わった staging バッファを map_async で map し直す（次以降のフレームで再利用）
 ```
 
-- `queue.write_buffer` は、渡したデータを wgpu の内部の一時領域へもう一度コピーする。staging バッファへ直接書き込めば、このコピーと、呼び出しのたびの一時領域の確保がなくなる
+- `queue.write_buffer` は、呼び出しのたびに wgpu の内部で一時領域を確保する。staging バッファを使い回せば、この確保がなくなり、複数の書き込みを同じチャンクにまとめられる
+  - **段階 5 で分かったこと：**wgpu 30 では map したメモリを `&mut [u8]` として直接書けない（書き込み専用の型 `WriteOnly` を経由し、`copy_from_slice` で写す）。`VertexLayout` に合わせて詰める作業用のバイト列（`DrawManager*` が使い回す）から 1 回写すため、CPU でのコピーの回数は `write_buffer` と同じ。速くなるのは一時領域の確保がなくなる分
 - `copy_buffer_to_buffer` は queue に積んだ順に実行されるため、前のフレームの描画が読んでいる領域へ書いても競合しない。そのため、書き込み先の領域をフレームごとに切り替えるリングバッファは持たない
 - staging バッファは一定の大きさ（`LonasConfig::staging_chunk_size`）の塊（チャンク）に分けて持つ
   - 空いた map 済みのチャンクがなければ、`mapped_at_creation: true` で新しく作る（作った時点で map 済みのため待ちが起きない）
@@ -498,7 +500,8 @@ GpuContext::end_frame
   - 1 回の書き込みがチャンクより大きい場合は、その大きさの専用のチャンクを作る
 - `DrawManager*` は `DrawManager*::new(&mut gpu, ...)` で device の複製を受け取り、チャンクを自分で作る（wgpu の `Device` は内部で参照を数えているため、複製は安い）
 - 却下案：`Object*` ごとのリングバッファ（`MemoryUpdateType::Dynamic { ring_count }`）。転送をコピーで行う限り、前のフレームの描画とは競合しないため効果がない。効果が出るのはヒープのバッファ自体を map して書き込む場合だが、wgpu では頂点などのバッファを map するのに `MAPPABLE_PRIMARY_BUFFERS` が必要で、単体の GPU では GPU から読む速度が落ちる
-- 却下案：`DrawManager*` の `Vec<u8>` に書き写し、`end_frame` で `queue.write_buffer` する（CPU でのコピーが 1 回多い）
+- 却下案：`DrawManager*` の `Vec<u8>` に書き写し、`end_frame` で `queue.write_buffer` する（呼び出しのたびに wgpu の内部で一時領域を確保する）
+- map し直しが終わったチャンクは、`end_frame` の最初と、新しいチャンクを作る前に空きに戻す。GPU が使っている間は別のチャンクに書くため、画面に出す場合は 2〜3 つに落ち着く（段階 5 で確認）
 
 ### Dynamic の割り当て：TLSF
 
@@ -646,9 +649,10 @@ GpuContext::end_frame
 
 ```rust
 enum HeapRequest {
-    Allocate { handle: GpuAllocation, space: MemorySpace, size: u64, update: MemoryUpdateType },
-    Write    { handle: GpuAllocation, offset: u64, chunk: u32, range: Range<u64> }, // staging バッファのチャンクと範囲
-    Free     { handle: GpuAllocation },
+    Allocate   { handle: GpuAllocation, space: SpaceKind, size: u64, update: MemoryUpdateType },
+    // 大きさや memory_update_type が変わった。中身は Write で書き直す（段階 5 で追加）
+    Reallocate { handle: GpuAllocation, space: SpaceKind, size: u64, update: MemoryUpdateType },
+    Write      { handle: GpuAllocation, space: SpaceKind, offset: u64, chunk: u32, range: Range<u64> }, // staging バッファのチャンクと範囲
     WriteUniform { shader: ShaderId, slot: u32, chunk: u32, range: Range<u64> }, // uniform の要素（§6 uniform の領域）
 }
 
@@ -657,6 +661,7 @@ struct DrawManagerCore {
     heap_requests: Vec<HeapRequest>,
     draw_commands: Vec<DrawCommand>,
     reclaimed: HashSet<GpuAllocation>, // GC で回収されたハンドル（§6 回収の通知）
+    touched: Vec<(SpaceKind, GpuAllocation)>, // そのフレームで end された Object* の領域。描かないフレームでも GC に回収されないように知らせる（段階 5 で追加）
     uniform_slots: HashMap<ShaderId, UniformSlots>, // シェーダーごとの uniform の要素の空き番号（§6 uniform の領域）
 }
 ```
@@ -1008,10 +1013,14 @@ impl Object2D { // Object3D も同じ
   - 警告は、頂点数が合わない状態になった時に 1 回だけ出す（毎フレーム出さない）
 - **決定：`index()` を呼ばず、`topology()` も一度も呼ばずに `end` した場合は panic。**`index()` を呼んでいる場合は `topology()` を使わないため、呼ばなくてよい
 - **決定：`Polygon` の頂点の向き（時計回り / 反時計回り）は自動で判定する。**符号付き面積で向きを求め、分割はその向きに合わせて行う。生成する三角形の向きは一定に揃える
+  - **決定（段階 5）：2D は入力の向きによらず xy 平面で反時計回りに揃える。3D は入力の頂点の並びと同じ向きにする。**3D は多角形の平面がどちらを向くかで表裏が決まり、表にする側はユーザーが頂点の順で選ぶため
 
 #### Polygon の分割方法
 
 **決定：`Polygon` の三角形化は CPU で行い、単調多角形分割（monotone polygon decomposition）を使う。計算量は O(n log n)。**
+
+- **段階 5 の実装：**走査線に交わる辺の一覧は配列で持ち、頂点の左の辺を線形に探す。計算量は並べ替えの O(n log n) と、走査線に同時に交わる辺の数 k に比例する O(n·k)。k は多くの形で小さいため、木構造（O(log n) で探せる）にするのは、遅さが問題になってから
+- 3D の多角形は、Newell の方法で求めた法線の最も大きい軸を落として 2D にしてから分割する
 
 1. 頂点を y 座標（3D では多角形の平面上の座標）で並べ替える
 2. 上から順に走査し（sweep line）、へこみの原因になる頂点（split / merge 頂点）に対角線を引いて、多角形を y 方向に単調な多角形に分ける
@@ -1229,6 +1238,12 @@ pub struct Camera3D {
     pub fov_y: f32,
     pub near: f32,
     pub far: f32,
+}
+
+pub enum ProjectionMode {
+    Perspective,
+    // 写す範囲の高さ（ワールドの単位）。幅は描くサーフェスの縦横比から求める（段階 5 で決定）
+    Orthographic { height: f32 },
 }
 
 impl Camera2D { // Camera3D も同じ
@@ -1687,7 +1702,7 @@ impl Object2D {
 
 | 対象 | 同値の判定と無視 | 警告 |
 |---|---|---|
-| `shader` / `texture` / `blend` / `topology` / `camera` / `layer` / `memory_update_type` | 常に行う | `redundant_call_warning = true` のときのみ |
+| `shader` / `texture` / `blend` / `topology` / `camera` / `layer` / `memory_update_type` | 常に行う | `redundant_call_warning = true` のときのみ。毎フレームのログを避けるため、`Object*` ごと・設定の関数ごとに 1 回だけ（段階 5 で決定） |
 | 頂点・インデックスのその場比較（§4） | 常に行う | 出さない（毎フレーム呼ぶ関数のため） |
 | uniform | 常に行う | 出さない（高頻度で呼ぶことを想定した関数のため） |
 

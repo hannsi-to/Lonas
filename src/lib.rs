@@ -1,11 +1,13 @@
 pub mod color;
 pub mod config;
+pub mod draw;
 pub mod error;
 pub mod gpu;
 pub mod instance;
 pub mod lonas;
 pub mod math;
 pub mod memory;
+pub mod object;
 pub mod resource;
 pub mod vertex;
 pub mod wgsl;

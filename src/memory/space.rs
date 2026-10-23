@@ -29,6 +29,8 @@ pub(crate) struct MemorySpace {
     dynamic: TlsfAllocator,
     growth_factor: f32,
     placements: HashMap<GpuAllocation, Placement>,
+    // 詰め直しで移す範囲。詰め直した回ごとにまとめ、起きた順に GPU でコピーする
+    pending_moves: Vec<Vec<Move>>,
 }
 
 impl MemorySpace {
@@ -40,6 +42,7 @@ impl MemorySpace {
             dynamic: TlsfAllocator::new(dynamic_initial_capacity, ALIGNMENT),
             growth_factor,
             placements: HashMap::new(),
+            pending_moves: Vec::new(),
         }
     }
 
@@ -88,6 +91,7 @@ impl MemorySpace {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn size(&self, handle: GpuAllocation) -> u64 {
         match self.placement(handle) {
             Placement::Static(id) => self.static_stack.size(id),
@@ -95,6 +99,7 @@ impl MemorySpace {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn update_type(&self, handle: GpuAllocation) -> MemoryUpdateType {
         match self.placement(handle) {
             Placement::Static(_) => MemoryUpdateType::Static,
@@ -102,19 +107,37 @@ impl MemorySpace {
         }
     }
 
-    // 穴がしきい値を超えていれば Static 領域を詰め直し、移す範囲を返す（§6 Static 領域のコンパクション）
-    // Static 領域はメモリ空間の先頭にあるため、Move の位置はそのままメモリ空間の位置
-    pub(crate) fn compact_if_needed(&mut self, threshold: f32) -> Vec<Move> {
+    // 穴がしきい値を超えていれば Static 領域を詰め直す（§6 Static 領域のコンパクション）
+    pub(crate) fn compact_if_needed(&mut self, threshold: f32) {
         if self.static_stack.needs_compaction(threshold) {
-            self.static_stack.compact()
-        } else {
-            Vec::new()
+            self.compact();
+        }
+    }
+
+    // 詰め直しで移す範囲を、詰め直した回ごとに起きた順で取り出す
+    // Static 領域はメモリ空間の先頭にあるため、Move の位置はそのままメモリ空間の位置
+    pub(crate) fn take_moves(&mut self) -> Vec<Vec<Move>> {
+        std::mem::take(&mut self.pending_moves)
+    }
+
+    fn compact(&mut self) {
+        let moves = self.static_stack.compact();
+
+        if !moves.is_empty() {
+            self.pending_moves.push(moves);
         }
     }
 
     fn place(&mut self, size: u64, update: MemoryUpdateType) -> (Placement, Option<Grown>) {
         match update {
-            MemoryUpdateType::Static => (Placement::Static(self.static_stack.allocate(size)), None),
+            MemoryUpdateType::Static => {
+                // 先頭に積めなくても、穴を詰めれば収まるなら先に詰める
+                if !self.static_stack.fits(size) && self.static_stack.hole_total() > 0 {
+                    self.compact();
+                }
+
+                (Placement::Static(self.static_stack.allocate(size)), None)
+            }
             MemoryUpdateType::Dynamic => {
                 if let Some(id) = self.dynamic.allocate(size) {
                     return (Placement::Dynamic(id), None);
@@ -208,9 +231,26 @@ mod tests {
         }
 
         space.free(handle(1));
-        assert!(space.compact_if_needed(0.5).is_empty()); // 穴は 10%
-        assert_eq!(space.compact_if_needed(0.05), vec![Move { from: 200, to: 100, size: 200 }]);
+        space.compact_if_needed(0.5); // 穴は 10% のため詰めない
+        assert!(space.take_moves().is_empty());
+        space.compact_if_needed(0.05);
+        assert_eq!(space.take_moves(), vec![vec![Move { from: 200, to: 100, size: 200 }]]);
         assert_eq!([space.offset(handle(0)), space.offset(handle(2)), space.offset(handle(3))], [0, 100, 200]);
+    }
+
+    #[test]
+    fn static_compacts_before_running_out() {
+        let mut space = MemorySpace::new(300, 0, 2.0);
+
+        for serial in 0..3 {
+            space.allocate(handle(serial), 100, MemoryUpdateType::Static);
+        }
+
+        space.free(handle(0));
+        // 先頭には積めないが、穴を詰めれば収まる
+        space.allocate(handle(3), 100, MemoryUpdateType::Static);
+        assert_eq!(space.take_moves(), vec![vec![Move { from: 100, to: 0, size: 200 }]]);
+        assert_eq!(space.offset(handle(3)), 200);
     }
 
     #[test]

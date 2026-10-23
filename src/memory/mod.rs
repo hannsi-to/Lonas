@@ -1,5 +1,4 @@
-// GPU メモリの管理のうち、CPU 側で行う計算（§6）。GPU のバッファの作成・コピーは段階 5 で行う
-#![allow(dead_code)] // 段階 5（GpuContext のヒープ）で使う
+// GPU メモリの管理のうち、CPU 側で行う計算（§6）。GPU のバッファの作成・コピーは gpu/heap.rs で行う
 
 pub(crate) mod gc;
 pub(crate) mod space;

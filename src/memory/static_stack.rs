@@ -107,8 +107,14 @@ impl StaticStack {
         self.region(id).offset
     }
 
+    #[cfg(test)]
     pub(crate) fn size(&self, id: StaticId) -> u64 {
         self.region(id).size
+    }
+
+    // 今の先頭に積めば容量に収まるか
+    pub(crate) fn fits(&self, size: u64) -> bool {
+        self.top + super::tlsf::align_up(size, self.alignment) <= self.capacity
     }
 
     // 穴の合計が容量に対して threshold（0.0〜1.0）を超えたか（§6 Static 領域のコンパクション）

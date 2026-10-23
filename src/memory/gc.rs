@@ -22,11 +22,6 @@ impl GcTracker {
         self.last_used_frame.insert(handle, frame);
     }
 
-    // 明示的に解放したハンドルは追いかけない
-    pub(crate) fn forget(&mut self, handle: GpuAllocation) {
-        self.last_used_frame.remove(&handle);
-    }
-
     // unused_frames フレームの間 end されなかったハンドルを回収して返す
     // 呼び出し側はヒープの領域を解放する。回収したハンドルは DrawManager* ごとに溜まる
     pub(crate) fn collect(&mut self, current_frame: u64, unused_frames: u32) -> Vec<GpuAllocation> {
@@ -80,15 +75,6 @@ mod tests {
 
         assert!(gc.collect(130, 120).is_empty());
         assert_eq!(gc.collect(220, 120), vec![handle(0, 0)]);
-    }
-
-    #[test]
-    fn forgotten_handles_are_not_collected() {
-        let mut gc = GcTracker::new();
-        gc.touch(handle(0, 0), 0);
-        gc.forget(handle(0, 0));
-
-        assert!(gc.collect(1000, 1).is_empty());
     }
 
     #[test]

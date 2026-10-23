@@ -105,7 +105,6 @@ impl VertexLayout {
 }
 
 impl Vertex {
-    #[allow(dead_code)] // 段階 5（Object の転送）で使う
     // VertexLayout に含まれる要素だけを詰めて dst に書く。色は線形に変換する（§10 頂点の並び方・§11 色）
     // dst の大きさは layout.stride() と同じであること
     pub(crate) fn write_packed(&self, layout: VertexLayout, dst: &mut [u8]) {
