@@ -19,7 +19,7 @@ use crate::math::{Vector2f, Vector3f};
 use crate::memory::MemoryUpdateType;
 use crate::resource::{ShaderId, TextureId};
 use crate::vertex::Vertex;
-use core::{EndContext, ObjectCore, VertexElements};
+use core::{EndContext, ObjectCore};
 use topology::Winding;
 
 // 2D / 3D で共通のメソッド
@@ -56,6 +56,20 @@ macro_rules! object_common {
 
             pub fn memory_update_type(&mut self, memory_update_type: MemoryUpdateType) -> &mut Self {
                 self.core.set("memory_update_type", |core| &mut core.memory_update_type, memory_update_type);
+                self
+            }
+
+            // 頂点（§1 頂点の入力）。前のフレームの同じ位置の頂点と比べながら書き込む。2D でも z は渡したとおりに使う
+            // VertexLayout に含まれない要素に 0 以外の値があれば、Object ごとに一度だけ警告して捨てる（§10 頂点の並び方）
+            pub fn vertex(&mut self, vertex: Vertex) -> &mut Self {
+                self.core.write_vertex(vertex);
+                self
+            }
+
+            // 以降の vertex() を、次の begin_hole() か end まで 1 つの穴の輪郭にする（§10 穴のある多角形）
+            // Polygon は穴を空けて塗り、Stroke は穴の輪郭も描く。他の分け方では穴を使わない
+            pub fn begin_hole(&mut self) -> &mut Self {
+                self.core.begin_hole();
                 self
             }
 
@@ -130,23 +144,6 @@ impl Object2D {
         Self { core: ObjectCore::new(gpu, Winding::CounterClockwiseXy), layer: None, bounding_circle: None }
     }
 
-    // 2D の頂点（§11 2D の頂点の入力）。省略された要素は 0.0
-    pub fn vertex(&mut self, x: f32, y: f32) -> &mut Self {
-        self.core.write_vertex(Vertex::new_position(x, y, 0.0), VertexElements::Position);
-        self
-    }
-
-    pub fn vertex_color(&mut self, x: f32, y: f32, r: f32, g: f32, b: f32, a: f32) -> &mut Self {
-        self.core.write_vertex(Vertex::new_position_color(x, y, 0.0, r, g, b, a), VertexElements::Color);
-        self
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn vertex_color_uv(&mut self, x: f32, y: f32, r: f32, g: f32, b: f32, a: f32, u: f32, v: f32) -> &mut Self {
-        self.core.write_vertex(Vertex::new_position_color_uv(x, y, 0.0, r, g, b, a, u, v), VertexElements::Uv);
-        self
-    }
-
     // 2D のみ。未指定なら LonasConfig::layer_when_unset（§10 描画順）
     pub fn layer(&mut self, layer: i32) -> &mut Self {
         if self.layer == Some(layer) {
@@ -175,46 +172,6 @@ impl Object2D {
 impl Object3D {
     pub fn new(gpu: &GpuContext) -> Self {
         Self { core: ObjectCore::new(gpu, Winding::FollowInput), bounding_sphere: None }
-    }
-
-    pub fn vertex(&mut self, x: f32, y: f32, z: f32) -> &mut Self {
-        self.core.write_vertex(Vertex::new_position(x, y, z), VertexElements::Position);
-        self
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn vertex_color(&mut self, x: f32, y: f32, z: f32, r: f32, g: f32, b: f32, a: f32) -> &mut Self {
-        self.core.write_vertex(Vertex::new_position_color(x, y, z, r, g, b, a), VertexElements::Color);
-        self
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn vertex_color_uv(&mut self, x: f32, y: f32, z: f32, r: f32, g: f32, b: f32, a: f32, u: f32, v: f32) -> &mut Self {
-        self.core.write_vertex(Vertex::new_position_color_uv(x, y, z, r, g, b, a, u, v), VertexElements::Uv);
-        self
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn vertex_color_uv_normal(
-        &mut self,
-        x: f32,
-        y: f32,
-        z: f32,
-        r: f32,
-        g: f32,
-        b: f32,
-        a: f32,
-        u: f32,
-        v: f32,
-        n_x: f32,
-        n_y: f32,
-        n_z: f32,
-    ) -> &mut Self {
-        self.core.write_vertex(
-            Vertex::new_position_color_uv_normal(x, y, z, r, g, b, a, u, v, n_x, n_y, n_z),
-            VertexElements::Normal,
-        );
-        self
     }
 
     // 任意。指定しなければ頂点から自動で計算する（§10 視界の判定に使う大きさ）

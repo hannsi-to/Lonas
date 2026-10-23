@@ -9,6 +9,7 @@ wgpu の上に作った、2D / 3D の描画ライブラリです。
 - **差分だけを転送する。** 頂点は関数の引数として受け取り、内部の写しとその場で比べながら書き込みます。変わった範囲だけを GPU に送ります（DESIGN.md §1・§4）
 - **GPU メモリを自前で管理する。** 用途ごとの大きなバッファをヒープとして使います。Static 領域はスタックとコンパクションで、Dynamic 領域は TLSF で割り当て、使われなくなった領域はフレーム単位の GC で回収します（§6）
 - **Compute Shader で描画を準備する。** カリング・並べ替え・間接描画の引数の書き込みを GPU で行い、同じ設定の Object をまとめて `multi_draw_indexed_indirect` で描きます（§10）
+- **穴のある多角形。** `Topology::Polygon` で、`begin_hole()` で区切った頂点を穴として空けられます（§10）
 - **太さのある線。** `Topology::Stroke` で、頂点を線の中心として太さのある線を作ります。角のつなぎ方（Miter・Bevel・Round など）、端の丸め、破線を選べます（§10）
 - **2D と 3D を別の型で扱う。** `Object2D` / `Object3D`、`DrawManager2D` / `DrawManager3D` に分けています。2D は `layer` の順に、3D は不透明なものの後に半透明なものを奥から手前の順に描きます
 - **アンチエイリアス。** MSAA・FXAA・TAA を実行中に切り替えられます（§11）
@@ -34,9 +35,9 @@ object.add_instance(Instance2D::default());
 gpu.begin_frame();
 
 object.begin();
-object.vertex(0.0, 0.0);
-object.vertex(100.0, 0.0);
-object.vertex(0.0, 100.0);
+object.vertex(Vertex::new_position_color(0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0));
+object.vertex(Vertex::new_position_color(100.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0));
+object.vertex(Vertex::new_position_color(0.0, 100.0, 0.0, 1.0, 1.0, 1.0, 1.0));
 object.end(&mut draw_manager);
 
 gpu.end_frame(&mut resources, &mut [

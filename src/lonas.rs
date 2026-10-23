@@ -13,5 +13,5 @@ pub use crate::math::{Matrix4f, Quaternion, Vector2f, Vector3f, Vector4f};
 pub use crate::memory::MemoryUpdateType;
 pub use crate::object::{Dash, InstanceId, JointType, Object2D, Object3D, Topology};
 pub use crate::resource::{ResourceManager, ShaderId, TextureId};
-pub use crate::vertex::VertexLayout;
+pub use crate::vertex::{Vertex, VertexLayout};
 pub use crate::wgsl;

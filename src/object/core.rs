@@ -15,9 +15,9 @@ use crate::memory::{GpuAllocation, ManagerId, MemoryUpdateType};
 use crate::resource::{ShaderId, TextureId};
 use crate::vertex::{Vertex, VertexLayout};
 
-// 頂点の要素をどこまで書いたか（§10 頂点の並び方の警告）
+// 頂点の要素をどこまで使ったか（§10 頂点の並び方の警告）。0 以外の値がある要素を使ったとみなす
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum VertexElements {
+enum VertexElements {
     Position,
     Color,
     Uv,
@@ -25,6 +25,20 @@ pub(crate) enum VertexElements {
 }
 
 impl VertexElements {
+    fn used_by(vertex: &Vertex) -> Self {
+        let any = |values: &[f32]| values.iter().any(|&value| value != 0.0);
+
+        if any(&[vertex.n_x, vertex.n_y, vertex.n_z]) {
+            VertexElements::Normal
+        } else if any(&[vertex.u, vertex.v]) {
+            VertexElements::Uv
+        } else if any(&[vertex.r, vertex.g, vertex.b, vertex.a]) {
+            VertexElements::Color
+        } else {
+            VertexElements::Position
+        }
+    }
+
     fn of(layout: VertexLayout) -> Self {
         match layout {
             VertexLayout::Position => VertexElements::Position,
@@ -90,6 +104,9 @@ pub(crate) struct ObjectCore<I> {
     // Stroke のときに GPU へ送る頂点。このとき vertices は線の中心の点になる（§10 線：Stroke）
     stroke_vertices: Vec<Vertex>,
     uses_stroke: bool,
+    // 穴の最初の頂点の位置（§10 穴のある多角形）。hole_cursor はこのフレームの begin_hole() で記録し、holes は最後に三角形化に使った値
+    holes: Vec<usize>,
+    hole_cursor: Vec<usize>,
 
     pub instances: InstanceSlots<I>,
     texture_changed: bool,
@@ -156,6 +173,8 @@ impl<I: InstanceData> ObjectCore<I> {
             generated_for: None,
             stroke_vertices: Vec::new(),
             uses_stroke: false,
+            holes: Vec::new(),
+            hole_cursor: Vec::new(),
             instances: InstanceSlots::new(id),
             texture_changed: false,
             uniform: Vec::new(),
@@ -184,13 +203,19 @@ impl<I: InstanceData> ObjectCore<I> {
         self.vertex_cursor = 0;
         self.index_cursor = 0;
         self.explicit_indices = false;
+        self.hole_cursor.clear();
+    }
+
+    // 以降の頂点を、次の begin_hole() まで 1 つの穴の輪郭にする（§10 穴のある多角形）
+    pub(crate) fn begin_hole(&mut self) {
+        self.hole_cursor.push(self.vertex_cursor);
     }
 
     // 前フレームの値と比較しながら書き込み、変わった位置を記録する（§1・§4）
-    pub(crate) fn write_vertex(&mut self, vertex: Vertex, elements: VertexElements) {
+    pub(crate) fn write_vertex(&mut self, vertex: Vertex) {
         let position = self.vertex_cursor;
         self.vertex_cursor += 1;
-        self.elements_written = self.elements_written.max(elements);
+        self.elements_written = self.elements_written.max(VertexElements::used_by(&vertex));
 
         match self.vertices.get_mut(position) {
             Some(old) if *old == vertex => {}
@@ -365,6 +390,11 @@ impl<I: InstanceData> ObjectCore<I> {
     // 戻り値は GPU に送る頂点の位置が変わったか（境界を求め直すかに使う）
     fn finish_indices(&mut self) -> bool {
         let positions_changed = std::mem::take(&mut self.positions_changed);
+        let holes_changed = self.hole_cursor != self.holes;
+
+        if holes_changed {
+            self.holes.clone_from(&self.hole_cursor);
+        }
 
         if self.explicit_indices {
             self.indices.truncate(self.index_cursor);
@@ -376,16 +406,22 @@ impl<I: InstanceData> ObjectCore<I> {
         let topology = self.topology.expect("index() も topology() も呼ばずに Object の end が呼ばれました");
 
         if let Topology::Stroke { .. } = topology {
-            return self.finish_stroke(topology);
+            return self.finish_stroke(topology, holes_changed);
         }
 
         let left_stroke = self.leave_stroke();
         let key = (topology, self.vertices.len());
-        let needs_generation = self.generated_for != Some(key) || (topology == Topology::Polygon && positions_changed);
+        let needs_generation =
+            self.generated_for != Some(key) || holes_changed || (topology == Topology::Polygon && positions_changed);
+
+        // 穴は Polygon と Stroke でだけ使う。他の分け方では外周の頂点だけを使い、一度だけ警告する
+        if !self.holes.is_empty() && topology != Topology::Polygon && self.warned.insert("holes") {
+            log::warn!("begin_hole() の穴は Polygon と Stroke でだけ使います。{topology:?} では外周の頂点だけを描きます");
+        }
 
         if needs_generation {
             let positions: Vec<Vector3f> = self.vertices.iter().map(|v| Vector3f::new(v.x, v.y, v.z)).collect();
-            let generated = topology::generate(topology, &positions, self.winding);
+            let generated = topology::generate(topology, &positions, &self.holes, self.winding);
 
             // 頂点数が合わない状態になった時に 1 回だけ警告する（§10）
             if generated.has_leftover && !self.had_leftover {
@@ -404,17 +440,17 @@ impl<I: InstanceData> ObjectCore<I> {
     }
 
     // 線の中心の点から、GPU に送る頂点とインデックスを作る（§10 線：Stroke）
-    // 点（位置以外の要素を含む）・設定・点の数のどれかが変わった時だけ作り直し、前と違う位置だけを送る
-    fn finish_stroke(&mut self, topology: Topology) -> bool {
+    // 点（位置以外の要素を含む）・設定・点の数・穴の区切りのどれかが変わった時だけ作り直し、前と違う位置だけを送る
+    fn finish_stroke(&mut self, topology: Topology, holes_changed: bool) -> bool {
         let Topology::Stroke { line_width, joint_type, strip, dash } = topology else { unreachable!() };
         let entering = !self.uses_stroke;
         let key = (topology, self.vertices.len());
 
-        if !entering && self.vertex_dirty.is_none() && self.generated_for == Some(key) {
+        if !entering && !holes_changed && self.vertex_dirty.is_none() && self.generated_for == Some(key) {
             return false;
         }
 
-        let mesh = stroke::tessellate(&self.vertices, line_width, joint_type, strip, dash);
+        let mesh = stroke::tessellate(&self.vertices, &self.holes, line_width, joint_type, strip, dash);
 
         // vertex_dirty は線の中心の点の範囲のため、作った頂点の差分で置き換える
         self.vertex_dirty = None;
@@ -600,7 +636,7 @@ impl<I: InstanceData> ObjectCore<I> {
     // VertexLayout に含まれない要素を書いた場合、Object ごとに 1 回だけ警告する（§10 頂点の並び方）
     fn warn_vertex_elements(&mut self, layout: VertexLayout) {
         if self.elements_written > VertexElements::of(layout) && self.warned.insert("vertex_elements") {
-            log::warn!("VertexLayout::{layout:?} に含まれない頂点の要素が書かれました。余分な要素は捨てます");
+            log::warn!("VertexLayout::{layout:?} に含まれない頂点の要素に 0 以外の値があります。余分な要素は捨てます");
         }
     }
 
@@ -681,4 +717,21 @@ fn replace_tracking<T: PartialEq>(old: &mut Vec<T>, new: Vec<T>, dirty: &mut Opt
     }
 
     *old = new;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn used_elements_come_from_non_zero_values() {
+        let used = |vertex: Vertex| VertexElements::used_by(&vertex);
+
+        assert_eq!(used(Vertex { x: 1.0, y: 2.0, z: 3.0, ..Default::default() }), VertexElements::Position);
+        assert_eq!(used(Vertex { a: 1.0, ..Default::default() }), VertexElements::Color);
+        assert_eq!(used(Vertex { v: 0.5, ..Default::default() }), VertexElements::Uv);
+        // 後ろの要素に値があれば、前の要素が 0 でもそこまで使ったとみなす（VertexLayout は前から順に足す形）
+        assert_eq!(used(Vertex { n_y: 1.0, ..Default::default() }), VertexElements::Normal);
+        assert_eq!(used(Vertex::new_position_color(0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0)), VertexElements::Color);
+    }
 }

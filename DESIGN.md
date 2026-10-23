@@ -17,7 +17,7 @@ gueiz の処理が複雑化したため、ユーザー API を先に固めてか
 | `Camera2D` / `Camera3D` | `DrawManager*` が所有し、`CameraId` で参照する（§5・§11） |
 | `ResourceManager` | シェーダーとテクスチャを登録し、`ShaderId` / `TextureId` を返す（§11） |
 | `Instance2D` / `Instance3D` | インスタンスごとの変換・色・表示 / 非表示（§11） |
-| `Vertex` | 内部の頂点表現。位置 / 色 / UV / 法線 (`#[repr(C)]`, `PartialEq`) |
+| `Vertex` | 頂点。位置 / 色 / UV / 法線。`Object*::vertex` に渡す（`#[repr(C)]`, `PartialEq`, `Default`、§1 頂点の入力） |
 
 ### 呼び出し区分
 
@@ -27,9 +27,9 @@ gueiz の処理が複雑化したため、ユーザー API を先に固めてか
 gpu.begin_frame();
 
 object.begin();
-object.vertex(x, 100.0); // Object2D は vertex(x, y)（§11）
-object.vertex(x, 100.0);
-object.vertex(x, 300.0);
+object.vertex(Vertex::new_position(x, 100.0, 0.0)); // §1 頂点の入力
+object.vertex(Vertex::new_position(x, 100.0, 0.0));
+object.vertex(Vertex::new_position(x, 300.0, 0.0));
 object.index(0);
 object.index(1);
 object.index(2);
@@ -59,18 +59,23 @@ let instance_id = object.add_instance(Instance2D { ... }); // InstanceId を返�
 
 ### 頂点の入力
 
-毎フレーム `Vertex` をユーザー側で作成するのはコストが高いため、**頂点の要素を関数の引数として直接受け取る**方式とする。
-`Vertex` はユーザーが組み立てるものではなく、ライブラリ内部の表現として扱う。
+**決定：頂点は `Vertex` 構造体で受け取る。`Object2D` / `Object3D` とも `vertex(Vertex)` の 1 つだけを用意する。**
 
-段階的に省略可能（省略された要素は 0.0）。
+```rust
+impl Object2D { // Object3D も同じ
+    pub fn vertex(&mut self, vertex: Vertex) -> &mut Self;
+}
 
-- `vertex(x, y, z)`
-- `vertex_color(x, y, z, r, g, b, a)`
-- `vertex_color_uv(x, y, z, r, g, b, a, u, v)`
-- `vertex_color_uv_normal(x, y, z, r, g, b, a, u, v, n_x, n_y, n_z)`
+object.vertex(Vertex::new_position_color(x, y, 0.0, r, g, b, a));
+object.vertex(Vertex { x, y, u, v, a: 1.0, ..Default::default() });
+```
 
-この方式の利点として、受け取った値を内部バッファの該当位置と **その場で比較しながら書き込める**。
-収集用バッファと GPU 反映済みバッファを二重に持たなくても変更検出ができる（§4 参照）。
+- 使わない要素は 0.0 にする。`Vertex` の `Default` はすべて 0.0 で、`new_position` / `new_position_color` / `new_position_color_uv` / `new_position_color_uv_normal` も省いた要素を 0.0 にする
+- 2D でも z は渡したとおりに使う（位置は `vec3<f32>` のまま送る、§10 頂点の並び方）
+- 受け取った値を内部バッファの該当位置と **その場で比較しながら書き込む** 点は変わらない。収集用バッファと GPU 反映済みバッファを二重に持たなくても変更検出ができる（§4 参照）
+- 以前の決定（頂点の要素を関数の引数で受け取る `vertex(x, y, z)` / `vertex_color(...)` / `vertex_color_uv(...)` / `vertex_color_uv_normal(...)`、2D は z のない `vertex(x, y)` など）は置き換えた。理由：
+  - 関数が要素の組み合わせと 2D / 3D の分だけ増え、引数が最大 12 個の並びになって読みにくい
+  - 「`Vertex` を毎フレーム作るのはコストが高い」としていたが、`Vertex` は 48 バイトの `Copy` な値で、引数を 12 個渡すのと手間は変わらない
 
 ---
 
@@ -995,9 +1000,9 @@ pub enum Blend {
 
 ```rust
 object.begin();
-object.vertex(0.0, 0.0, 0.0);
-object.vertex(1.0, 0.0, 0.0);
-object.vertex(0.0, 1.0, 0.0);
+object.vertex(Vertex::new_position(0.0, 0.0, 0.0));
+object.vertex(Vertex::new_position(1.0, 0.0, 0.0));
+object.vertex(Vertex::new_position(0.0, 1.0, 0.0));
 object.index(0);
 object.index(1);
 object.index(2);
@@ -1033,7 +1038,7 @@ impl Object2D { // Object3D も同じ
 | `TriangleList` | 0,1,2, 3,4,5, … | 頂点数が変わった時 |
 | `TriangleFan` | 0,1,2, 0,2,3, 0,3,4, … | 頂点数が変わった時 |
 | `TriangleStrip` | 0,1,2, 2,1,3, 2,3,4, …（向きを揃えるため 1 つおきに入れ替える） | 頂点数が変わった時 |
-| `Polygon` | 単調多角形分割で分割（O(n log n)、下記） | 頂点の位置が変わった時 |
+| `Polygon` | 単調多角形分割で分割（O(n log n)、下記）。穴も空けられる（下記の「穴のある多角形」） | 頂点の位置か穴の区切りが変わった時 |
 | `Stroke` | 頂点を線の中心として、線の頂点とインデックスを作る（下記） | 頂点（位置以外の要素を含む）・設定・頂点数のどれかが変わった時 |
 
 - パイプラインもバッチングも変わらない（GPU 側は常に三角形）
@@ -1041,7 +1046,7 @@ impl Object2D { // Object3D も同じ
 - `TriangleList` / `TriangleFan` / `TriangleStrip` は頂点数だけで決まるため、計算はほぼ不要で使い回せる
 - `Polygon` は頂点の位置が変わるたびに計算し直す必要がある（計算量 O(n log n)、下記）。形が頻繁に変わり、頂点数が多いものでは負担になる
 - `Polygon` は 2D の多角形（3D では 1 つの平面上にある多角形）を対象とする
-- 扱わないもの：穴のある多角形、自分と交差する多角形、点。線は `Stroke` で描く
+- 扱わないもの：自分と交差する多角形、点。線は `Stroke` で描く。穴は `begin_hole()` で空ける（下記）
 - **決定：頂点数が分け方に合わない場合、余った頂点を捨てて `log` で警告する。**
   - `TriangleList` で 3 の倍数でない場合：最後の余り（1〜2 個）を三角形に含めない
   - どの分け方でも頂点が 3 個未満の場合：何も描かない
@@ -1055,7 +1060,7 @@ impl Object2D { // Object3D も同じ
 **決定：`Polygon` の三角形化は CPU で行い、単調多角形分割（monotone polygon decomposition）を使う。計算量は O(n log n)。**
 
 - **段階 5 の実装：**走査線に交わる辺の一覧は配列で持ち、頂点の左の辺を線形に探す。計算量は並べ替えの O(n log n) と、走査線に同時に交わる辺の数 k に比例する O(n·k)。k は多くの形で小さいため、木構造（O(log n) で探せる）にするのは、遅さが問題になってから
-- 3D の多角形は、Newell の方法で求めた法線の最も大きい軸を落として 2D にしてから分割する
+- 3D の多角形は、Newell の方法で求めた外周の法線の最も大きい軸を落として 2D にしてから分割する（穴も同じ軸を落とす）
 
 1. 頂点を y 座標（3D では多角形の平面上の座標）で並べ替える
 2. 上から順に走査し（sweep line）、へこみの原因になる頂点（split / merge 頂点）に対角線を引いて、多角形を y 方向に単調な多角形に分ける
@@ -1064,6 +1069,41 @@ impl Object2D { // Object3D も同じ
 - 却下案：耳切り法（O(n²)。頂点が多いと遅い）
 - 却下案：Compute Shader での三角形化。1 つの多角形の中では処理を並列にできず、効果がない
 - 却下案：三角形に分けずに塗る方法（ステンシルで塗る技法）。2 回の描画とステンシルバッファが必要で、パイプラインとバッチングの方式に合わない
+
+#### 穴のある多角形
+
+**決定：`begin_hole()` で、以降の頂点を穴の輪郭にする。**`begin`〜`end` の間で呼び、次の `begin_hole()` か `end` までに書いた頂点が 1 つの穴になる。
+
+```rust
+impl Object2D { // Object3D も同じ
+    pub fn begin_hole(&mut self) -> &mut Self;
+}
+
+object.begin();
+for p in outline { object.vertex(p); }   // 外周
+object.begin_hole();                      // ここから 1 つ目の穴
+for p in hole_a { object.vertex(p); }
+object.begin_hole();                      // ここから 2 つ目の穴
+for p in hole_b { object.vertex(p); }
+object.end(&mut manager);
+```
+
+- 頂点は今までどおり `vertex(Vertex)` で書き、区切りだけを足す。外周の後に穴の頂点が続けて並ぶため、その場で比較しながら書き込む方式（§1・§4）はそのまま使える
+- 却下案：`add_hole_vertex(Vertex)` のような穴専用の頂点の関数。複数の穴を区切るには結局区切りの関数が要り、頂点を書く関数も 2 つになる。また `add_` は `add_instance` のようにフレームをまたいで残るものに使っており、毎フレーム書く頂点には合わない
+- 区切りの位置（`begin_hole()` を呼んだ時点の頂点数）が前のフレームと違えば、頂点が同じでもインデックスを作り直す
+
+| 分け方 | 穴の扱い |
+|---|---|
+| `Polygon` | 穴を空けて塗る |
+| `Stroke`（閉じた輪郭） | 外周と、それぞれの穴の輪郭を閉じて描く。破線も輪ごとにかかる |
+| `Stroke`（開いた折れ線） | 輪ごとに、別々の開いた折れ線として描く |
+| `TriangleList` / `TriangleFan` / `TriangleStrip` | 穴は使わず、外周の頂点だけでインデックスを作る。`Object*` ごとに一度だけ `log` で警告する |
+| `index()` を呼んだ場合 | 区切りは使わない。穴の頂点も頂点バッファに入るため、インデックスから参照できる |
+
+- **決定：穴の向き（時計回り / 反時計回り）も自動で判定する。**外周と同じく符号付き面積で求める。生成する三角形の向きは外周で決まる（2D は反時計回り、3D は外周の入力の向き）
+- **分割の方法：**単調多角形分割は、外周を反時計回り、穴を時計回りに揃えれば（どの辺でも多角形の内部が左になる）、手順を変えずに穴を扱える。各頂点の前後の頂点を、その頂点が属する輪の中で取るようにした。頂点数 n・穴の数 h のとき、三角形は n + 2h - 2 個になる
+- 頂点が 3 個未満の穴、面積のない穴、空の穴（`begin_hole()` を続けて呼んだもの）は使わない
+- 穴が外周の内側にあるか、穴どうし・穴と外周が重ならないかは確かめない（自分と交差する多角形と同じく扱わない）
 
 #### 線：Stroke
 
@@ -1111,6 +1151,7 @@ pub struct Dash {
   - 閉じた輪郭では、始点をまたぐ破線を 1 本につなぐ（始点の角も `joint_type` でつながる）
   - 模様の位置は線に沿った長さで決まり、`offset` を変えると模様が線に沿って動く
 - **決定：`line_width` と `Dash` の値は `topology()` を呼んだ時に検査し、不正なら panic**（§3 設定の値の検査）。`line_width`・`length`・`gap` は 0 より大きい有限の値、`offset` は有限の値（負の値も使える）
+- `begin_hole()` で区切った穴は、外周とは別の線として描く。閉じた輪郭（`strip: false`）なら外周と穴の輪郭をそれぞれ閉じて描き、開いた折れ線なら輪ごとに別の折れ線にする（下記の「穴のある多角形」）
 - `index()` を呼んだフレームは、他の分け方と同じく `topology()` を使わないため、`Stroke` も使わない（頂点をそのまま送る）
 - 却下案：頂点シェーダーで線を広げる方法。描画の頂点の並びとシェーダーとの約束事（§11）が線のためだけに変わり、ユーザーのシェーダーに線の処理を書かせることになるため
 
@@ -1304,7 +1345,8 @@ impl DrawManager2D { // DrawManager3D も同じ（Camera3D を受け取る）
 ```
 
 - GPU へ転送する際に、`VertexLayout` に含まれる要素だけを詰めて書き込む。2D で位置と色だけ使う場合などに GPU メモリを節約できる
-- **決定：`VertexLayout` に含まれない要素を `vertex*` 関数で書いた場合（例：`Position` の `DrawManager*` に `vertex_color` で書いた `Object*`）、余分な要素を捨てて `log` で警告する。**
+- **決定：`VertexLayout` に含まれない要素に 0 以外の値がある `Vertex` を渡した場合（例：`Position` の `DrawManager*` に、色を入れた `Vertex` を渡した `Object*`）、余分な要素を捨てて `log` で警告する。**
+  - 要素を使ったかは値で判断する。その要素のどれかが 0 以外なら使ったとみなす（`VertexLayout` は前から順に要素を足す形のため、後ろの要素に値があれば前の要素も使ったとみなす）
   - 警告は `Object*` ごとに 1 回だけ出す（毎フレーム出さない）
   - 逆に `VertexLayout` の要素が足りない場合は、§1 の頂点の入力と同じく 0.0 で埋める
 - `Object*` の CPU 側は従来どおり `Vertex`（全要素）で持つ
@@ -1785,22 +1827,14 @@ struct Camera {                              // 224 バイト
 | UV | 2 | `Float32x2`（`vec2<f32>`） | `PositionColorUv` 以降 |
 | 法線 | 3 | `Float32x3`（`vec3<f32>`） | `PositionColorUvNormal` |
 
-- 2D の頂点（`vertex(x, y)`、§11 2D の頂点の入力）も位置は `vec3<f32>` で、z は 0
+- 2D の頂点も位置は `vec3<f32>` で、z は `Vertex` に渡した値（§1 頂点の入力）
 - 色は精度のため `f32` のまま送る（8 ビットに詰めると、線形の値では暗い色の階調が失われる）
 
 ### 2D の頂点の入力
 
-**決定：`Object2D` には 2D 用の `vertex(x, y)` を用意する。**
+`Object2D` も `Object3D` と同じ `vertex(Vertex)` で受け取る（§1 頂点の入力）。z も渡したとおりに使う。
 
-```rust
-impl Object2D {
-    pub fn vertex(&mut self, x: f32, y: f32) -> &mut Self;
-    pub fn vertex_color(&mut self, x: f32, y: f32, r: f32, g: f32, b: f32, a: f32) -> &mut Self;
-    pub fn vertex_color_uv(&mut self, x: f32, y: f32, r: f32, g: f32, b: f32, a: f32, u: f32, v: f32) -> &mut Self;
-}
-```
-
-- `Object3D` は従来どおり `vertex(x, y, z)` など
+- 以前の決定（`Object2D` に z のない `vertex(x, y)` / `vertex_color(...)` / `vertex_color_uv(...)` を用意する）は、§1 の `Vertex` で受け取る決定で置き換えた
 
 ### 同値の設定の扱いと redundant_call_warning
 
@@ -1909,7 +1943,7 @@ Color::from_rgba8(255, 128, 0, 255)
 Color::WHITE   Color::BLACK   Color::TRANSPARENT
 ```
 
-- 頂点の色（`vertex_color*`）・インスタンスの `Color`・`clear_color` は、転送するときに線形に変換する
+- 頂点の色（`Vertex` の r / g / b / a）・インスタンスの `Color`・`clear_color` は、転送するときに線形に変換する
 - テクスチャはアトラスが `Rgba8UnormSrgb` のため、サンプルした時点で線形になる（§11 TextureAtlas）
 - サーフェスは常に sRGB のフォーマットのため（§11 サーフェスのフォーマット）、書き込むときに GPU が sRGB に戻す
 - これにより、頂点の色・インスタンスの色・テクスチャの色の扱いがすべて揃う

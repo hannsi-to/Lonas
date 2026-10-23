@@ -6,7 +6,7 @@ use lonas::lonas::{
     DrawManager2D, DrawManager3D, FilterMode, GpuContext, Handedness, Instance2D, Instance3D, InstanceId,
     LonasConfig, LonasError, Matrix4f, MemoryCapacity, MemoryConfig, MemoryUpdateType, MotionVectorFormat, Object2D,
     Object3D, Origin2D, PresentMode, ProjectionMode, Quaternion, ResourceManager, ShaderId, SurfaceDraw, SurfaceId, TaaConfig,
-    TextureAtlasConfig, TextureId, Topology, Vector2f, Vector3f, VertexLayout, Visibility,
+    TextureAtlasConfig, TextureId, Topology, Vector2f, Vector3f, Vertex, VertexLayout, Visibility,
 };
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::sync::Arc;
@@ -392,17 +392,17 @@ impl TestApplication {
         // 毎フレーム必ず呼ばれる関数群。begin / end は Object* ごとに毎フレーム 1 回ずつ（§2）
         // 頂点は前フレームの値と比べられ、変わった範囲だけ転送される
         self.triangle.begin();
-        self.triangle.vertex_color(self.x, 100.0, 1.0, 0.0, 0.0, 1.0);
-        self.triangle.vertex_color(self.x + 50.0, 100.0, 0.0, 1.0, 0.0, 1.0);
-        self.triangle.vertex_color(self.x, 300.0, 0.0, 0.0, 1.0, 1.0);
+        self.triangle.vertex(Vertex::new_position_color(self.x, 100.0, 0.0, 1.0, 0.0, 0.0, 1.0));
+        self.triangle.vertex(Vertex::new_position_color(self.x + 50.0, 100.0, 0.0, 0.0, 1.0, 0.0, 1.0));
+        self.triangle.vertex(Vertex::new_position_color(self.x, 300.0, 0.0, 0.0, 0.0, 1.0, 1.0));
         self.triangle.end(&mut self.draw_manager_2d);
 
         // 動かない物体も毎フレーム頂点を書く。変わらなければ転送されない
         self.sprites.begin();
-        self.sprites.vertex_color_uv(0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0);
-        self.sprites.vertex_color_uv(32.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0);
-        self.sprites.vertex_color_uv(32.0, 32.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0);
-        self.sprites.vertex_color_uv(0.0, 32.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0);
+        self.sprites.vertex(Vertex::new_position_color_uv(0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0));
+        self.sprites.vertex(Vertex::new_position_color_uv(32.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0));
+        self.sprites.vertex(Vertex::new_position_color_uv(32.0, 32.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0));
+        self.sprites.vertex(Vertex::new_position_color_uv(0.0, 32.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0));
         // インスタンスの更新は変わったスロットの範囲だけ転送される（§7）
         let id = self.sprite_ids[0];
         self.sprites.update_instance(id, Instance2D {
@@ -416,7 +416,7 @@ impl TestApplication {
 
         self.floor.begin();
         for (x, z) in [(-10.0, -10.0), (10.0, -10.0), (10.0, 10.0), (-10.0, 10.0)] {
-            self.floor.vertex_color_uv_normal(x, 0.0, z, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0);
+            self.floor.vertex(Vertex::new_position_color_uv_normal(x, 0.0, z, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0));
         }
         self.floor.index(0).index(1).index(2).index(0).index(2).index(3);
         // uniform は高頻度で呼んでよい。同値なら無視され、警告も出ない（§11 uniform）
