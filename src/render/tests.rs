@@ -117,7 +117,8 @@ fn draw_2d(scene: &mut Scene, manager: &mut DrawManager2D, objects: &mut [&mut O
         surface: scene.surface,
         clear_color: Some(Color::BLACK),
         draw_managers: &mut [manager],
-    }]);
+    }])
+    .unwrap();
 
     scene.gpu.read_pixels(scene.surface)
 }
@@ -262,7 +263,8 @@ fn draw_3d(scene: &mut Scene, manager: &mut DrawManager3D, objects: &mut [&mut O
         surface: scene.surface,
         clear_color: Some(Color::BLACK),
         draw_managers: &mut [manager],
-    }]);
+    }])
+    .unwrap();
 
     scene.gpu.read_pixels(scene.surface)
 }
@@ -382,7 +384,8 @@ fn draw_textured(scene: &mut Scene, manager: &mut DrawManager2D, objects: &mut [
         surface: scene.surface,
         clear_color: Some(Color::BLACK),
         draw_managers: &mut [manager],
-    }]);
+    }])
+    .unwrap();
 
     scene.gpu.read_pixels(scene.surface)
 }
@@ -547,7 +550,8 @@ fn partial_pixels(scene: &mut Scene, manager: &mut DrawManager2D, object: &mut O
         surface: scene.surface,
         clear_color: Some(Color::BLACK),
         draw_managers: &mut [manager],
-    }]);
+    }])
+    .unwrap();
 
     // 履歴を 95% 使うフレームでは白や黒に近い値になるため、ほぼ白・黒も数える
     scene.gpu.read_pixels(scene.surface).iter().filter(|p| p[0] > 2 && p[0] < 253).count()

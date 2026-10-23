@@ -8,6 +8,7 @@ mod surface;
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
@@ -62,6 +63,8 @@ pub struct GpuContext {
     next_manager_id: u32,
     // Object*::new(&gpu) で発行するため、&self で増やせるようにする（§2）
     next_object_id: AtomicU64,
+    // デバイスが失われた理由。wgpu のコールバックが別のスレッドから書き込むことがある（§12 デバイスの喪失）
+    device_lost: Arc<Mutex<Option<String>>>,
     // ウィンドウなしの GpuContext が生きている間持つ。device より後に drop するため最後に置く
     #[cfg(test)]
     _gpu_test_lock: Option<GpuTestLock>,
@@ -181,6 +184,10 @@ impl GpuContext {
             .await
             .map_err(LonasError::RequestDevice)?;
 
+        let device_lost = Arc::new(Mutex::new(None));
+        let record = device_lost.clone();
+        device.set_device_lost_callback(move |reason, message| record_device_lost(&record, reason, message));
+
         let heap = Heap::new(&config);
         let renderer = Renderer::new(&device, &queue, &config);
 
@@ -198,6 +205,7 @@ impl GpuContext {
             frame: FrameClock::new(),
             next_manager_id: 0,
             next_object_id: AtomicU64::new(0),
+            device_lost,
             #[cfg(test)]
             _gpu_test_lock: None,
         })
@@ -261,7 +269,8 @@ impl GpuContext {
     }
 
     // §9 の end_frame の処理の順に行う
-    pub fn end_frame(&mut self, resource_manager: &mut ResourceManager, surfaces: &mut [SurfaceDraw<'_, '_>]) {
+    // デバイスが失われていたら GPU の処理をせずに Err(DeviceLost) を返す。以降のフレームも毎回返す（§12 デバイスの喪失）
+    pub fn end_frame(&mut self, resource_manager: &mut ResourceManager, surfaces: &mut [SurfaceDraw<'_, '_>]) -> Result<(), LonasError> {
         let state = self.frame.state();
 
         if !state.in_frame {
@@ -279,6 +288,11 @@ impl GpuContext {
             );
         }
 
+        if let Err(error) = self.check_device() {
+            self.abandon_frame(surfaces);
+            return Err(error);
+        }
+
         let frame = state.number;
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Lonas frame") });
 
@@ -288,7 +302,7 @@ impl GpuContext {
 
             // 1. 前のフレームの後片付け：map し直しが終わった staging バッファを空きに戻す
             // wgpu 30 の poll の失敗（Timeout / WrongSubmissionIndex）は待つ場合のもので、Poll では起きないはず。起きたら知らせる
-            // デバイスの喪失はここでは分からない（§12 デバイスの喪失）
+            // デバイスの喪失は poll ではなく、set_device_lost_callback で知る（§12 デバイスの喪失）
             if let Err(error) = self.device.poll(wgpu::PollType::Poll) {
                 log::warn!("device.poll が失敗しました: {error}");
             }
@@ -419,6 +433,12 @@ impl GpuContext {
             presented.extend(acquired.surface_texture);
         }
 
+        // フレームの途中で失われた場合は、記録した命令を送らずに捨てる
+        if let Err(error) = self.check_device() {
+            self.abandon_frame(surfaces);
+            return Err(error);
+        }
+
         // 7. 送信：submit を 1 回行い、各サーフェスを present する
         self.queue.submit([encoder.finish()]);
 
@@ -441,6 +461,30 @@ impl GpuContext {
         }
 
         self.frame.end();
+
+        Ok(())
+    }
+
+    fn check_device(&self) -> Result<(), LonasError> {
+        match &*self.device_lost.lock().unwrap_or_else(PoisonError::into_inner) {
+            Some(reason) => Err(LonasError::DeviceLost { reason: reason.clone() }),
+            None => Ok(()),
+        }
+    }
+
+    // デバイスが失われたフレームを終える。GPU には触れず、次の begin_frame と Object* の end が使える状態にだけ戻す
+    fn abandon_frame(&mut self, surfaces: &mut [SurfaceDraw<'_, '_>]) {
+        for manager in surfaces.iter_mut().flat_map(|draw| draw.draw_managers.iter_mut().map(|manager| manager.core())) {
+            manager.finish_frame();
+        }
+
+        self.frame.end();
+    }
+
+    // テストで、デバイスが失われた状態にする（wgpu には喪失を起こす公開の手段がない）
+    #[cfg(test)]
+    pub(crate) fn simulate_device_lost(&self, message: &str) {
+        record_device_lost(&self.device_lost, wgpu::DeviceLostReason::Unknown, message.to_string());
     }
 
     fn check_anti_aliasing(&self, anti_aliasing: AntiAliasing) -> Result<(), LonasError> {
@@ -564,6 +608,17 @@ fn to_wgpu_color(color: Color) -> wgpu::Color {
     wgpu::Color { r: r as f64, g: g as f64, b: b as f64, a: a as f64 }
 }
 
+// デバイスの喪失を記録する。最初の理由を残す
+// Destroyed は GpuContext を drop したときのもので、喪失として扱わない（Lonas 以外は device.destroy を呼べない）
+fn record_device_lost(state: &Mutex<Option<String>>, reason: wgpu::DeviceLostReason, message: String) {
+    if reason == wgpu::DeviceLostReason::Destroyed {
+        return;
+    }
+
+    let message = if message.is_empty() { "原因は分かりません".to_string() } else { message };
+    state.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert(message);
+}
+
 // 渡されたサーフェスのどれかが TAA を使うか
 fn surfaces_use_taa(surfaces: &Slots<SurfaceState>, used: &HashSet<SurfaceId>) -> bool {
     used.iter().any(|id| surfaces.get(id.0).is_some_and(|surface| surface.anti_aliasing == AntiAliasing::Taa))
@@ -593,7 +648,7 @@ mod tests {
         for frame in 1..=3 {
             gpu.begin_frame();
             assert_eq!(gpu.frame.state().number, frame);
-            gpu.end_frame(&mut resources, &mut []);
+            gpu.end_frame(&mut resources, &mut []).unwrap();
         }
     }
 
@@ -621,7 +676,7 @@ mod tests {
         assert!(panic_message(|| gpu.remove_surface(other)).contains("別の GpuContext"));
 
         gpu.begin_frame();
-        assert!(panic_message(|| gpu.end_frame(&mut resources, &mut [draw(other)])).contains("別の GpuContext"));
+        assert!(panic_message(|| { let _ = gpu.end_frame(&mut resources, &mut [draw(other)]); }).contains("別の GpuContext"));
     }
 
     #[test]
@@ -640,11 +695,49 @@ mod tests {
         assert_eq!(gpu.surface_size(new), Vector2f::new(8.0, 8.0));
 
         gpu.begin_frame();
-        gpu.end_frame(&mut resources, &mut [draw(new)]);
+        gpu.end_frame(&mut resources, &mut [draw(new)]).unwrap();
         assert!(gpu.read_pixels(new).iter().all(|&pixel| pixel == [255, 0, 0, 255]));
 
         gpu.begin_frame();
-        assert!(panic_message(|| gpu.end_frame(&mut resources, &mut [draw(old)])).contains("削除済み"));
+        assert!(panic_message(|| { let _ = gpu.end_frame(&mut resources, &mut [draw(old)]); }).contains("削除済み"));
+    }
+
+    #[test]
+    fn device_lost_is_reported_every_frame() {
+        let Some(mut gpu) = headless() else { return };
+        let mut resources = ResourceManager::new();
+        let surface = gpu.add_offscreen(4, 4);
+
+        gpu.begin_frame();
+        gpu.end_frame(&mut resources, &mut [draw(surface)]).unwrap();
+        gpu.simulate_device_lost("テストで失わせた");
+
+        // 一度だけでなく、以降のフレームも毎回 Err を返す。begin_frame はそのまま使える
+        for _ in 0..2 {
+            gpu.begin_frame();
+            let green = SurfaceDraw { surface, clear_color: Some(Color::new(0.0, 1.0, 0.0, 1.0)), draw_managers: &mut [] };
+
+            match gpu.end_frame(&mut resources, &mut [green]) {
+                Err(LonasError::DeviceLost { reason }) => assert_eq!(reason, "テストで失わせた"),
+                other => panic!("DeviceLost になりませんでした: {other:?}"),
+            }
+        }
+
+        // 失われた後のフレームは GPU に送らないため、画面は最初の赤のまま
+        assert!(gpu.read_pixels(surface).iter().all(|&pixel| pixel == [255, 0, 0, 255]));
+    }
+
+    #[test]
+    fn device_lost_records_first_reason_and_ignores_destroy() {
+        let state = Mutex::new(None);
+
+        // GpuContext の drop による Destroyed は喪失ではない
+        record_device_lost(&state, wgpu::DeviceLostReason::Destroyed, "dropped".to_string());
+        assert_eq!(*state.lock().unwrap(), None);
+
+        record_device_lost(&state, wgpu::DeviceLostReason::Unknown, String::new());
+        record_device_lost(&state, wgpu::DeviceLostReason::Unknown, "2 回目".to_string());
+        assert_eq!(state.lock().unwrap().as_deref(), Some("原因は分かりません"));
     }
 
     #[test]

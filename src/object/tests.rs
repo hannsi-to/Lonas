@@ -47,7 +47,7 @@ fn camera_3d() -> Camera3D {
 
 fn end_frame(gpu: &mut GpuContext, resources: &mut ResourceManager, manager: &mut DrawManager2D) {
     let surface = surface(gpu);
-    gpu.end_frame(resources, &mut [SurfaceDraw { surface, clear_color: None, draw_managers: &mut [manager] }]);
+    gpu.end_frame(resources, &mut [SurfaceDraw { surface, clear_color: None, draw_managers: &mut [manager] }]).unwrap();
 }
 
 fn triangle(object: &mut Object2D, x: f32) {
@@ -355,6 +355,30 @@ fn staging_chunks_are_reused() {
     assert_eq!(active + free + in_flight, total, "GPU が追いついた後にチャンクが増えました");
 }
 
+// デバイスが失われたフレームでも、DrawManager* の描画コマンドは片付け、次のフレームで使えるようにする
+#[test]
+fn draw_commands_are_cleared_when_device_is_lost() {
+    let Some(mut gpu) = headless(sample_config()) else { return };
+    let mut resources = ResourceManager::new();
+    let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), VertexLayout::Position);
+    let mut object = new_triangle(&gpu, MemoryUpdateType::Dynamic);
+
+    gpu.simulate_device_lost("テストで失わせた");
+
+    for _ in 0..2 {
+        gpu.begin_frame();
+        object.begin();
+        triangle(&mut object, 0.0);
+        object.end(&mut manager);
+        assert_eq!(manager.core.draw_commands.len(), 1);
+
+        let surface = surface(&gpu);
+        let result = gpu.end_frame(&mut resources, &mut [SurfaceDraw { surface, clear_color: None, draw_managers: &mut [&mut manager] }]);
+        assert!(matches!(result, Err(crate::error::LonasError::DeviceLost { .. })));
+        assert!(manager.core.draw_commands.is_empty());
+    }
+}
+
 #[test]
 fn misuse_panics() {
     let Some(mut gpu) = headless(sample_config()) else { return };
@@ -462,7 +486,7 @@ fn draw_manager_3d_accepts_object_3d() {
     assert_eq!(object.core.index_values().len(), 6);
     assert_eq!(manager.core.draw_commands[0].instance_count, 1);
     let surface = surface(&gpu);
-    gpu.end_frame(&mut resources, &mut [SurfaceDraw { surface, clear_color: None, draw_managers: &mut [&mut manager] }]);
+    gpu.end_frame(&mut resources, &mut [SurfaceDraw { surface, clear_color: None, draw_managers: &mut [&mut manager] }]).unwrap();
 
     object.remove_instance(id);
     gpu.begin_frame();

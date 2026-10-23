@@ -40,8 +40,10 @@ object.end(&mut draw_manager);
 
 gpu.end_frame(&mut resources, &mut [
     SurfaceDraw { surface, clear_color: Some(Color::BLACK), draw_managers: &mut [&mut draw_manager] },
-]);
+])?;
 ```
+
+`end_frame` は、ドライバーのリセットなどで GPU のデバイスが失われると `Err(LonasError::DeviceLost)` を返します。Lonas の中では復旧しないので、`GpuContext` などをすべて作り直してください（DESIGN.md §12）。
 
 `LonasConfig` には既定値がなく、すべての項目を指定する必要があります（§3）。動く全体の例は [examples/test1.rs](examples/test1.rs) を見てください。
 

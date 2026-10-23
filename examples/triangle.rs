@@ -180,7 +180,8 @@ impl State {
             surface: self.surface,
             clear_color: Some(Color::rgb(0.1, 0.1, 0.12)),
             draw_managers: &mut [&mut self.manager_3d, &mut self.manager_2d],
-        }]);
+        }])
+        .expect("GPU のデバイスが失われました"); // 作り直す例は test1.rs（§12 デバイスの喪失）
     }
 }
 

@@ -37,7 +37,7 @@ object.end(&mut draw_manager_2d);
 
 gpu.end_frame(&mut resource_manager, &mut [
     SurfaceDraw { surface: main_surface, clear_color: Some(color), draw_managers: &mut [&mut draw_manager_3d, &mut draw_manager_2d] },
-]);
+])?; // デバイスが失われたら Err（§12 デバイスの喪失）
 ```
 
 **高頻度ではないが、描画中でも呼ばれる関数群**
@@ -864,10 +864,12 @@ impl GpuContext {
         width: u32,
         height: u32,
     ) -> Result<SurfaceId, LonasError>;
+    pub fn remove_surface(&mut self, surface: SurfaceId); // §11 複数ウィンドウ
     pub fn resize(&mut self, surface: SurfaceId, width: u32, height: u32);
     pub fn surface_size(&self, surface: SurfaceId) -> Vector2f; // resize で通知された大きさ（ピクセル）
     pub fn begin_frame(&mut self);
-    pub fn end_frame(&mut self, resource_manager: &mut ResourceManager, surfaces: &mut [SurfaceDraw<'_, '_>]);
+    // デバイスが失われたら Err(DeviceLost)（§12 デバイスの喪失）
+    pub fn end_frame(&mut self, resource_manager: &mut ResourceManager, surfaces: &mut [SurfaceDraw<'_, '_>]) -> Result<(), LonasError>;
 }
 
 pub struct SurfaceDraw<'a, 'b> {
@@ -886,7 +888,7 @@ object_ui.end(&mut draw_manager_2d);
 // サーフェスごとに、渡した順に描画する（3D → 2D）
 gpu.end_frame(&mut resource_manager, &mut [
     SurfaceDraw { surface: main_surface, clear_color: Some(color), draw_managers: &mut [&mut draw_manager_3d, &mut draw_manager_2d] },
-]);
+])?; // デバイスが失われたら Err（§12 デバイスの喪失）
 ```
 
 - **決定：`new` / `add_surface` は、ウィンドウの最初の大きさ（ピクセル）を受け取る。**`raw-window-handle` からは大きさが分からず、サーフェスの設定に必要なため。以降の変化は `resize` で知らせる（段階 4 で決定）
@@ -1398,7 +1400,7 @@ let (width, height) = resource_manager.texture_size(texture_id); // 登録した
 
 object.shader(shader_id);
 
-gpu.end_frame(&mut resource_manager, &mut [ /* SurfaceDraw ... */ ]);
+gpu.end_frame(&mut resource_manager, &mut [ /* SurfaceDraw ... */ ])?;
 ```
 
 #### GPU との分担
@@ -1774,7 +1776,7 @@ pub enum LonasError {
     UnsupportedAdapter { missing: &'static str }, // 必須の機能がない（§8。VERTEX_STORAGE / COMPUTE_SHADERS / INDIRECT_EXECUTION / INDIRECT_FIRST_INSTANCE）
     RequestDevice(wgpu::RequestDeviceError),
     CreateSurface(wgpu::CreateSurfaceError),
-    DeviceLost { reason: String }, // 今は返す API がない（§12 デバイスの喪失）
+    DeviceLost { reason: String }, // end_frame が返す（§12 デバイスの喪失）
     UnsupportedSurfaceFormat,          // sRGB のフォーマットに対応していない（§11 サーフェスのフォーマット）
     UnsupportedSampleCount { requested: u32, supported: Vec<u32> },
     UnsupportedPresentMode(PresentMode),  // §8
@@ -1896,7 +1898,7 @@ gpu.begin_frame();
 gpu.end_frame(&mut resource_manager, &mut [
     SurfaceDraw { surface: main_surface, clear_color: Some(color), draw_managers: &mut [&mut dm_3d, &mut dm_2d] },
     SurfaceDraw { surface: sub_surface,  clear_color: None,        draw_managers: &mut [&mut dm_ui] },
-]);
+])?;
 
 gpu.resize(main_surface, width, height);
 gpu.set_anti_aliasing(main_surface, AntiAliasing::Msaa { sample_count: 4 })?;
@@ -2061,11 +2063,30 @@ gpu.set_anti_aliasing(surface_id, AntiAliasing::Taa)?;
 
 新たに出た未決事項はここに追加する。
 
-### デバイスの喪失（通しレビューで追加）
+### デバイスの喪失（通しレビューで追加・決定済み）
 
-ドライバーのリセットなどで GPU のデバイスが失われたときの扱いが決まっていない。`LonasError::DeviceLost` はあるが、返す API がない。
+ドライバーのリセットなどで GPU のデバイスが失われたときの扱い。
 
-- 対応するには、`end_frame` を `Result` にするか、失われたことを問い合わせる関数を足すなどの API の変更が要る
-- 復旧するには、シェーダー・アトラス・ヒープなどの GPU 上のリソースをすべて作り直す必要がある（`Object*` の CPU 側の写し（§4）から再転送できるが、`GpuContext` が `Object*` を知らない）
-- 決まるまでは wgpu の既定の挙動（panic など）のままとする
-- 喪失を知るには `Device::set_device_lost_callback` を使う。`end_frame` で呼んでいる `device.poll` の失敗（wgpu 30 では `Timeout` / `WrongSubmissionIndex`）は待つ場合のもので、喪失は返さない。今は失敗したらログに出すだけにしている
+**決定：`end_frame` を `Result<(), LonasError>` にし、デバイスが失われていたら `Err(LonasError::DeviceLost { reason })` を返す。**
+
+- 環境に起因するエラーは `Result` で返す方針（§11 エラーの方針）に合わせる。毎フレーム必ず呼ぶ関数なので、知らせる場所としても自然で、`Result` は使わないとコンパイラが警告するため見落としにくい
+- 喪失したら、`end_frame` は GPU の処理（転送・Compute・描画・`submit`・`present`）を一切せずに `Err` を返す。**一度だけでなく、以降のフレームも毎回返す**（あるフレームで処理しそこねても見落とさない）
+- 確かめるのは `end_frame` の最初と、`submit` の前。フレームの途中で失われた場合は、そのフレームで記録した命令を送らずに捨てる
+- `Err` を返すフレームでも、`DrawManager*` の描画コマンドの片付けとフレーム番号の終了は行う。次の `begin_frame`・`Object*` の `end` はそのまま呼べる（どちらも CPU 側の処理だけで、戻り値は変えない）
+- **復旧は Lonas の中ではしない。**`GpuContext` は `Object*` を知らず、GPU 上のリソースを作り直せないため。使う側が `GpuContext`・`DrawManager*`・`ResourceManager`・`Object*` をすべて作り直す。ウィンドウのサーフェスを手放すため、新しい `GpuContext` を作る前に古いものを drop する（例：`examples/test1.rs`）
+
+**喪失の検知**
+
+- `GpuContext` を作るときに `Device::set_device_lost_callback` を登録し、理由を共有の値（`Arc<Mutex<Option<String>>>`）に記録する。コールバックは wgpu の内部から別のスレッドで呼ばれることがあるため、中では記録だけを行う
+- 理由が `DeviceLostReason::Destroyed` のものは記録しない。`GpuContext` を drop したときのもので、Lonas 以外は `device.destroy` を呼べないため
+- 最初の理由を残す。理由の文字列が空なら「原因は分かりません」とする
+- `end_frame` で呼んでいる `device.poll` の失敗（wgpu 30 では `Timeout` / `WrongSubmissionIndex`）は待つ場合のもので、喪失は返さない。失敗したらログに出すだけにする
+- wgpu には喪失を起こす公開の手段がないため、テストでは記録する値に直接書き込んで確かめる
+
+却下案：
+
+| 案 | 却下の理由 |
+|---|---|
+| 失われたかを問い合わせる関数を足す | 呼び忘れると気付けず、呼ばないまま次の `end_frame` が来たときの扱いを別に決める必要がある |
+| 設定でコールバックを受け取る | wgpu のスレッドで呼ばれるため中で作り直しはできず、結局フラグを立てて問い合わせる形になる |
+| panic にする | 誤用ではなく環境に起因するため、§11 エラーの方針に反する。アプリが作り直して続けられない |
