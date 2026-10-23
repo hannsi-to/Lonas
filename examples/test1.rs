@@ -1,7 +1,7 @@
 // DESIGN.md の API に沿ったユーザー側のサンプル
 // cargo run --example test1（T：TAA への切り替えとカメラのカット、V：垂直同期の切り替え）
 
-use Lonas::lonas::{self,
+use lonas::lonas::{
     AntiAliasing, Backend, BindingConfig, BindingSlot, Blend, Camera2D, Camera3D, Color, CoordinateSystemConfig, CullMode,
     DrawManager2D, DrawManager3D, FilterMode, GpuContext, Handedness, Instance2D, Instance3D, InstanceId,
     LonasConfig, LonasError, Matrix4f, MemoryCapacity, MemoryConfig, MemoryUpdateType, MotionVectorFormat, Object2D,

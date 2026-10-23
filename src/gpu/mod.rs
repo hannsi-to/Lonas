@@ -130,8 +130,14 @@ impl GpuContext {
     // サーフェスを持たない GpuContext。GPU を使うテストで使う（PLAN.md 全体の方針）
     #[cfg(test)]
     // 作ってから drop するまで、他の GPU を使うテストを待たせる
+    // 環境変数 LONAS_SKIP_GPU_TESTS があれば GPU を使わずに Err を返し、GPU を使うテストを飛ばさせる（CI 用）
     pub(crate) fn new_headless(config: LonasConfig) -> Result<Self, LonasError> {
         config.validate();
+
+        if std::env::var_os("LONAS_SKIP_GPU_TESTS").is_some() {
+            // テストだけで使うため、専用の種類は作らずに UnsupportedAdapter を借りる
+            return Err(LonasError::UnsupportedAdapter { missing: "調べていません（LONAS_SKIP_GPU_TESTS が設定されています）" });
+        }
 
         let lock = GpuTestLock::acquire();
         let mut context = pollster::block_on(Self::with_instance(create_instance(config.backend), None, config))?;
@@ -533,6 +539,11 @@ fn to_wgpu_color(color: Color) -> wgpu::Color {
     wgpu::Color { r: r as f64, g: g as f64, b: b as f64, a: a as f64 }
 }
 
+// 渡されたサーフェスのどれかが TAA を使うか
+fn surfaces_use_taa(surfaces: &SurfaceSlots, used: &HashSet<SurfaceId>) -> bool {
+    used.iter().any(|id| surfaces.get(*id).is_some_and(|surface| surface.anti_aliasing == AntiAliasing::Taa))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -625,9 +636,4 @@ mod tests {
         assert!((color.r - 0.21404).abs() < 1e-4);
         assert_eq!((color.g, color.b, color.a), (0.0, 1.0, 0.5));
     }
-}
-
-// 渡されたサーフェスのどれかが TAA を使うか
-fn surfaces_use_taa(surfaces: &SurfaceSlots, used: &HashSet<SurfaceId>) -> bool {
-    used.iter().any(|id| surfaces.get(*id).is_some_and(|surface| surface.anti_aliasing == AntiAliasing::Taa))
 }

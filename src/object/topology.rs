@@ -41,7 +41,7 @@ pub(crate) fn generate(topology: Topology, positions: &[Vector3f], winding: Wind
     }
 
     match topology {
-        Topology::TriangleList => Generated { indices: (0..count / 3 * 3).collect(), has_leftover: count % 3 != 0 },
+        Topology::TriangleList => Generated { indices: (0..count / 3 * 3).collect(), has_leftover: !count.is_multiple_of(3) },
         Topology::TriangleFan => Generated {
             indices: (1..count - 1).flat_map(|i| [0, i, i + 1]).collect(),
             has_leftover: false,

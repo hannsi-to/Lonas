@@ -35,7 +35,7 @@ impl StagingBelt {
     // bytes を書き込み、そのチャンクの番号と範囲を返す
     pub(crate) fn write(&mut self, bytes: &[u8]) -> (u32, Range<u64>) {
         let size = bytes.len() as u64;
-        assert!(size > 0 && size % wgpu::COPY_BUFFER_ALIGNMENT == 0, "転送の大きさは 4 の倍数であること");
+        assert!(size > 0 && size.is_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT), "転送の大きさは 4 の倍数であること");
 
         let index = self.chunk_with_space(size);
         let chunk = &mut self.active[index];

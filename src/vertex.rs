@@ -18,6 +18,8 @@ pub struct Vertex {
 }
 
 impl Vertex {
+    // 頂点の要素を引数で直接受け取る（§1 頂点の入力）
+    #[allow(clippy::too_many_arguments)]
     pub fn new_position_color_uv_normal(x: f32, y: f32, z: f32, r: f32, g: f32, b: f32, a: f32, u: f32, v: f32, n_x: f32, n_y: f32, n_z: f32) -> Self {
         Self {
             x,
@@ -35,6 +37,7 @@ impl Vertex {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new_position_color_uv(x: f32, y: f32, z: f32, r: f32, g: f32, b: f32, a: f32, u: f32, v: f32) -> Self {
         Vertex::new_position_color_uv_normal(
             x,

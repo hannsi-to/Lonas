@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 mod common;
 
-use Lonas::lonas::{
+use lonas::lonas::{
     AntiAliasing, Camera3D, Color, CullMode, DrawManager3D, GpuContext, Instance3D, InstanceId, Matrix4f, MemoryUpdateType,
     Object3D, ProjectionMode, Quaternion, ResourceManager, SurfaceDraw, SurfaceId, Topology, Vector3f, VertexLayout, wgsl,
 };

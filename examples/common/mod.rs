@@ -1,6 +1,6 @@
 // examples で共有する設定。LonasConfig は既定値を持たないため、すべての項目を書く（§3）
 
-use Lonas::lonas::{
+use lonas::lonas::{
     AntiAliasing, Backend, BindingConfig, BindingSlot, Blend, CoordinateSystemConfig, CullMode, FilterMode, Handedness,
     LonasConfig, MemoryCapacity, MemoryConfig, MotionVectorFormat, Origin2D, PresentMode, TaaConfig, TextureAtlasConfig,
 };

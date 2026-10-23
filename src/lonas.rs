@@ -1,4 +1,4 @@
-// 公開 API の入り口。ユーザーは use Lonas::lonas::{...} で使う（examples/test1.rs）
+// 公開 API の入り口。ユーザーは use lonas::lonas::{...} で使う（examples/test1.rs）
 
 pub use crate::color::Color;
 pub use crate::config::{

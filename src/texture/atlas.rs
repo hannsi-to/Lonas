@@ -158,7 +158,7 @@ impl Atlas {
             let entries = (slot as u64 + 1).next_power_of_two();
             self.rects = create_rects(device, entries);
 
-            for (&slot, _) in &self.placements {
+            for &slot in self.placements.keys() {
                 queue.write_buffer(&self.rects, slot as u64 * size_of::<GpuTextureRect>() as u64, bytemuck::bytes_of(&self.rect(slot)));
             }
         }

@@ -92,7 +92,7 @@ const _: () = assert!(size_of::<GpuInstance3D>() == crate::wgsl::INSTANCE_3D_SIZ
 
 impl Instance2D {
     // texture_slot / uniform_index は Lonas が付け足す（§11 UV の変換・uniform）
-    pub(crate) fn to_gpu(&self, texture_slot: u32, uniform_index: u32) -> GpuInstance2D {
+    pub(crate) fn to_gpu(self, texture_slot: u32, uniform_index: u32) -> GpuInstance2D {
         GpuInstance2D {
             color: self.color.to_linear(),
             position: self.position.to_array(),
@@ -106,7 +106,7 @@ impl Instance2D {
 }
 
 impl Instance3D {
-    pub(crate) fn to_gpu(&self, texture_slot: u32, uniform_index: u32) -> GpuInstance3D {
+    pub(crate) fn to_gpu(self, texture_slot: u32, uniform_index: u32) -> GpuInstance3D {
         GpuInstance3D {
             transform: self.transform.to_cols_array(),
             color: self.color.to_linear(),

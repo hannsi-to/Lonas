@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 mod common;
 
-use Lonas::lonas::{Color, GpuContext, ResourceManager, SurfaceDraw, SurfaceId};
+use lonas::lonas::{Color, GpuContext, ResourceManager, SurfaceDraw, SurfaceId};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
