@@ -1,5 +1,6 @@
 // 描画（§10）：シェーダー・パイプライン・Compute のパス・描画のパス・テクスチャアトラス・uniform
 
+pub(crate) mod antialiasing;
 pub(crate) mod frame;
 pub(crate) mod pipeline;
 #[cfg(test)]
@@ -15,6 +16,7 @@ use crate::resource::shader::BindingKind;
 use crate::resource::{ResourceChange, ResourceManager, ShaderId};
 use crate::texture::atlas::Atlas;
 use frame::{DrawResources, FramePlan, PlanInput, Strides};
+pub(crate) use frame::TargetFormat;
 use pipeline::{PipelineCache, ShaderEntry};
 
 // cull.wgsl の Compute のパイプライン
@@ -48,6 +50,7 @@ pub(crate) struct Renderer {
     empty_uniform: wgpu::Buffer,
     uniform_initial_elements: u32,
     growth_factor: f32,
+    post: antialiasing::PostProcess,
     strides: Strides,
     // シェーダーを指定していない Object を描かない警告を、一度だけ出す
     warned_missing_shader: HashSet<crate::object::instance_slots::ObjectId>,
@@ -91,6 +94,7 @@ impl Renderer {
             }),
             uniform_initial_elements: config.memory.uniform_initial_elements.max(1),
             growth_factor: config.dynamic_growth_factor,
+            post: antialiasing::PostProcess::new(device),
             strides: Strides {
                 camera: align(crate::wgsl::CAMERA_SIZE as u64),
                 params: align(size_of::<frame::GpuParams>() as u64),
@@ -140,7 +144,7 @@ impl Renderer {
         manager: &mut DrawManagerCore,
         cameras: &[Option<CameraFrame>],
         camera_slots: &[u32],
-        color_format: wgpu::TextureFormat,
+        target: TargetFormat,
         frame: u64,
     ) -> Option<PreparedDraw> {
         let mut shaders = Vec::with_capacity(manager.draw_commands.len());
@@ -178,7 +182,7 @@ impl Renderer {
             .draw_commands
             .iter()
             .zip(&shaders)
-            .map(|(command, &shader)| frame::pipeline_key(command, manager, shader, color_format))
+            .map(|(command, &shader)| frame::pipeline_key(command, manager, shader, target))
             .collect();
         let plan = FramePlan::build(manager, heap, PlanInput { commands: &manager.draw_commands, keys: &keys, camera_slots });
 
@@ -212,7 +216,7 @@ impl Renderer {
         for batch in &plan.batches {
             user_bind_groups
                 .entry(batch.key.shader)
-                .or_insert_with(|| self.user_bind_groups(device, resources, instance_buffer, manager_id, batch.key.shader));
+                .or_insert_with(|| self.user_bind_groups(device, resources, heap, instance_space, manager_id, batch.key.shader));
         }
 
         Some(PreparedDraw { plan, layout_space: SpaceKind::Vertex(manager.layout), user_bind_groups })
@@ -236,6 +240,22 @@ impl Renderer {
 
             pass.multi_draw_indexed_indirect(&resources.args.buffer, frame::args_offset(batch.args_start), batch.args_count);
         }
+    }
+
+    // アンチエイリアスの後処理（FXAA・TAA）を記録する（§11 アンチエイリアス）
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn post_process(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        targets: &mut antialiasing::FrameTargets,
+        surface: &wgpu::TextureView,
+        format: wgpu::TextureFormat,
+        taa: &crate::config::TaaConfig,
+        history_valid: bool,
+    ) {
+        self.post.record(device, queue, encoder, targets, surface, format, taa, history_valid);
     }
 
     pub(crate) fn collect_unused(&mut self, frame: u64, unused_frames: u32) {
@@ -304,10 +324,19 @@ impl Renderer {
         &self,
         device: &wgpu::Device,
         resources: &DrawResources,
-        instances: &wgpu::Buffer,
+        heap: &Heap,
+        instance_space: SpaceKind,
         manager: ManagerId,
         shader: ShaderId,
     ) -> Vec<wgpu::BindGroup> {
+        let instances = heap.buffer(instance_space).expect("インスタンスのヒープがありません");
+        // 前のフレームのインスタンス。TAA を使わないフレームは写していないため、現在と同じもの
+        let previous_instances = heap.previous_buffer(instance_space).unwrap_or(instances);
+        let previous_camera = wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+            buffer: &resources.previous_cameras.buffer,
+            offset: 0,
+            size: wgpu::BufferSize::new(crate::wgsl::CAMERA_SIZE as u64),
+        });
         let b = &self.bindings;
         let camera = wgpu::BindingResource::Buffer(wgpu::BufferBinding {
             buffer: &resources.cameras.buffer,
@@ -316,16 +345,15 @@ impl Renderer {
         });
         let uniform = self.uniforms.get(&(manager, shader)).map_or(&self.empty_uniform, |uniform| &uniform.buffer);
         let all = [
-            (b.camera, camera.clone()),
+            (b.camera, camera),
             (b.instances, instances.as_entire_binding()),
             (b.instance_order, resources.order.buffer.as_entire_binding()),
             (b.atlas_texture, wgpu::BindingResource::TextureView(self.atlas.view())),
             (b.atlas_sampler, wgpu::BindingResource::Sampler(self.atlas.sampler())),
             (b.texture_rects, self.atlas.rects().as_entire_binding()),
             (b.uniform, uniform.as_entire_binding()),
-            // 前のフレームのカメラ・インスタンスは段階 8（TAA）で作る。それまでは現在と同じもの
-            (b.previous_camera, camera),
-            (b.previous_instances, instances.as_entire_binding()),
+            (b.previous_camera, previous_camera),
+            (b.previous_instances, previous_instances.as_entire_binding()),
         ];
 
         self.user_layouts

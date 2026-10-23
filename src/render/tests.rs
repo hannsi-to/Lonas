@@ -530,3 +530,86 @@ fn uniform_size_mismatch_panics() {
 
     draw_2d(&mut scene, &mut manager, &mut [&mut object], 8.0);
 }
+
+// ---- アンチエイリアス（段階 8）----
+
+use crate::config::AntiAliasing;
+
+// 斜めの辺を持つ白い三角形を描き、輪郭で中間の色になった画素の数を返す
+fn partial_pixels(scene: &mut Scene, manager: &mut DrawManager2D, object: &mut Object2D) -> usize {
+    scene.gpu.begin_frame();
+    object.begin();
+    object.vertex_color(0.0, 0.0, 1.0, 1.0, 1.0, 1.0);
+    object.vertex_color(SIZE as f32, 0.0, 1.0, 1.0, 1.0, 1.0);
+    object.vertex_color(0.0, SIZE as f32 * 0.7, 1.0, 1.0, 1.0, 1.0);
+    object.end(manager);
+    scene.gpu.end_frame(&mut scene.resources, &mut [SurfaceDraw {
+        surface: scene.surface,
+        clear_color: Some(Color::BLACK),
+        draw_managers: &mut [manager],
+    }]);
+
+    // 履歴を 95% 使うフレームでは白や黒に近い値になるため、ほぼ白・黒も数える
+    scene.gpu.read_pixels(scene.surface).iter().filter(|p| p[0] > 2 && p[0] < 253).count()
+}
+
+fn edge_scene() -> Option<(Scene, DrawManager2D, Object2D)> {
+    let mut scene = scene(SHADER_2D)?;
+    let manager = manager_2d(&mut scene);
+    let mut object = Object2D::new(&scene.gpu);
+    object.memory_update_type(MemoryUpdateType::Static).topology(Topology::TriangleList).shader(scene.shader).cull_mode(CullMode::None);
+    object.add_instance(Instance2D::default());
+
+    Some((scene, manager, object))
+}
+
+#[test]
+fn each_anti_aliasing_smooths_edges() {
+    let Some((mut scene, mut manager, mut object)) = edge_scene() else { return };
+
+    // アンチエイリアスなしでは、輪郭は白か黒のどちらか
+    assert_eq!(partial_pixels(&mut scene, &mut manager, &mut object), 0, "None");
+
+    for mode in [AntiAliasing::Msaa { sample_count: 4 }, AntiAliasing::Fxaa, AntiAliasing::Taa] {
+        // 実行中に切り替える。反映は次の begin_frame（§11 実行中の切り替え）
+        scene.gpu.set_anti_aliasing(scene.surface, mode).unwrap();
+
+        // TAA は履歴が貯まるまで数フレームかかる
+        let mut count = 0;
+        for _ in 0..8 {
+            count = partial_pixels(&mut scene, &mut manager, &mut object);
+        }
+
+        assert!(count > 20, "{mode:?} で輪郭がなめらかになっていません（{count} 画素）");
+    }
+
+    // なしに戻すと、また白か黒になる
+    scene.gpu.set_anti_aliasing(scene.surface, AntiAliasing::None).unwrap();
+    assert_eq!(partial_pixels(&mut scene, &mut manager, &mut object), 0, "None に戻した後");
+}
+
+#[test]
+fn taa_history_is_discarded_on_cut() {
+    let Some((mut scene, mut manager, mut object)) = edge_scene() else { return };
+
+    scene.gpu.set_anti_aliasing(scene.surface, AntiAliasing::Taa).unwrap();
+    for _ in 0..8 {
+        partial_pixels(&mut scene, &mut manager, &mut object);
+    }
+
+    // カメラのカット：そのフレームは履歴を使わず、ずらしたカメラの 1 枚だけになる（輪郭は白か黒）
+    scene.gpu.invalidate_history(scene.surface);
+    assert_eq!(partial_pixels(&mut scene, &mut manager, &mut object), 0, "カットの直後");
+    // 次のフレームからまた混ぜる
+    assert!(partial_pixels(&mut scene, &mut manager, &mut object) > 0, "カットの次のフレーム");
+}
+
+#[test]
+fn unsupported_sample_count_is_error() {
+    let Some((mut scene, _, _)) = edge_scene() else { return };
+
+    assert!(matches!(
+        scene.gpu.set_anti_aliasing(scene.surface, AntiAliasing::Msaa { sample_count: 3 }),
+        Err(crate::error::LonasError::UnsupportedSampleCount { requested: 3, .. }),
+    ));
+}

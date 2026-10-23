@@ -36,11 +36,17 @@ pub(crate) struct BindingInfo {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ShaderReflection {
     bindings: HashMap<(u32, u32), BindingInfo>,
+    // フラグメントシェーダーが書く @location。TAA の動きのベクトル（@location(1)）を書くかを見る（段階 8）
+    fragment_outputs: Vec<u32>,
 }
 
 impl ShaderReflection {
     pub(crate) fn binding(&self, group: u32, binding: u32) -> Option<BindingInfo> {
         self.bindings.get(&(group, binding)).copied()
+    }
+
+    pub(crate) fn writes_fragment_output(&self, location: u32) -> bool {
+        self.fragment_outputs.contains(&location)
     }
 }
 
@@ -93,7 +99,22 @@ fn reflect(module: &naga::Module) -> Result<ShaderReflection, naga::proc::Layout
         );
     }
 
-    Ok(ShaderReflection { bindings })
+    let mut fragment_outputs = Vec::new();
+
+    for entry in module.entry_points.iter().filter(|entry| entry.stage == naga::ShaderStage::Fragment) {
+        let Some(result) = &entry.function.result else { continue };
+
+        match (&result.binding, &module.types[result.ty].inner) {
+            (Some(naga::Binding::Location { location, .. }), _) => fragment_outputs.push(*location),
+            (None, TypeInner::Struct { members, .. }) => fragment_outputs.extend(members.iter().filter_map(|member| match member.binding {
+                Some(naga::Binding::Location { location, .. }) => Some(location),
+                _ => None,
+            })),
+            _ => {}
+        }
+    }
+
+    Ok(ShaderReflection { bindings, fragment_outputs })
 }
 
 #[cfg(test)]
@@ -136,6 +157,20 @@ mod tests {
 
         assert_eq!(size_of::<GpuInstance2D>() as u32, INSTANCE_2D_SIZE);
         assert_eq!(size_of::<GpuInstance3D>() as u32, INSTANCE_3D_SIZE);
+    }
+
+    #[test]
+    fn reflects_fragment_outputs() {
+        let single = check_wgsl("@fragment fn fs() -> @location(0) vec4<f32> { return vec4(1.0); }").unwrap().reflection;
+        let multiple = check_wgsl(
+            "struct Out { @location(0) color: vec4<f32>, @location(1) motion: vec2<f32> }
+            @fragment fn fs() -> Out { return Out(vec4(1.0), vec2(0.0)); }",
+        )
+        .unwrap()
+        .reflection;
+
+        assert!(single.writes_fragment_output(0) && !single.writes_fragment_output(1));
+        assert!(multiple.writes_fragment_output(1));
     }
 
     #[test]

@@ -321,6 +321,9 @@ pub(crate) struct DrawResources {
     pub keys: GrowBuffer,
     pub values: GrowBuffer,
     pub params: GrowBuffer,
+    // 前のフレームのカメラ（TAA の動きのベクトル用、§11 シェーダーとの約束事）
+    pub previous_cameras: GrowBuffer,
+    last_camera_bytes: Vec<u8>,
     // テストで、そのフレームのまとまり（引数の先頭と数）を確かめる
     #[cfg(test)]
     pub last_batches: Vec<(u32, u32)>,
@@ -339,6 +342,8 @@ impl DrawResources {
             keys: GrowBuffer::new(device, "Lonas sort keys", U::STORAGE),
             values: GrowBuffer::new(device, "Lonas sort values", U::STORAGE),
             params: GrowBuffer::new(device, "Lonas cull params", U::UNIFORM | U::COPY_DST),
+            previous_cameras: GrowBuffer::new(device, "Lonas previous cameras", U::UNIFORM | U::COPY_DST),
+            last_camera_bytes: Vec::new(),
             #[cfg(test)]
             last_batches: Vec::new(),
         }
@@ -397,6 +402,12 @@ pub(crate) fn record_compute(
 
     queue.write_buffer(&resources.objects.buffer, 0, bytemuck::cast_slice(&plan.objects));
     queue.write_buffer(&resources.cameras.buffer, 0, &camera_bytes);
+
+    // 前のフレームのカメラ。初めてのフレームは現在と同じ
+    let previous = if resources.last_camera_bytes.len() == camera_bytes.len() { &resources.last_camera_bytes } else { &camera_bytes };
+    resources.previous_cameras.ensure(device, previous.len() as u64);
+    queue.write_buffer(&resources.previous_cameras.buffer, 0, previous);
+    resources.last_camera_bytes = camera_bytes;
     queue.write_buffer(&resources.camera_culls.buffer, 0, bytemuck::cast_slice(&culls));
     queue.write_buffer(&resources.params.buffer, 0, &params_bytes);
 
@@ -447,12 +458,15 @@ fn entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
 }
 
 // 描画コマンドのパイプラインのキー。シェーダーが未指定なら None（描かない）
-pub(crate) fn pipeline_key(
-    command: &DrawCommand,
-    manager: &DrawManagerCore,
-    shader: Option<ShaderId>,
-    color_format: wgpu::TextureFormat,
-) -> Option<PipelineKey> {
+// 描画先の構成（§10 パイプラインのキャッシュ）
+#[derive(Copy, Clone, Debug)]
+pub(crate) struct TargetFormat {
+    pub color: wgpu::TextureFormat,
+    pub sample_count: u32,
+    pub motion: Option<wgpu::TextureFormat>,
+}
+
+pub(crate) fn pipeline_key(command: &DrawCommand, manager: &DrawManagerCore, shader: Option<ShaderId>, target: TargetFormat) -> Option<PipelineKey> {
     let shader = shader?;
     let depth = match (manager.dimension, command.settings.blend) {
         (Dimension::Two, _) => DepthMode::None,
@@ -468,8 +482,9 @@ pub(crate) fn pipeline_key(
         depth,
         layout: manager.layout,
         front_face: front_face(manager),
-        color_format,
-        sample_count: 1,
+        color_format: target.color,
+        sample_count: target.sample_count,
+        motion: target.motion,
     })
 }
 

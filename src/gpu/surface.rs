@@ -1,8 +1,8 @@
 // サーフェス（ウィンドウ）ごとの状態（§8・§9・§11 複数ウィンドウ・深度バッファ）
 
-use crate::config::{AntiAliasing, PresentMode};
+use crate::config::{AntiAliasing, MotionVectorFormat, PresentMode};
 use crate::error::LonasError;
-use crate::render::pipeline::DEPTH_FORMAT;
+use crate::render::antialiasing::FrameTargets;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SurfaceId(pub(crate) u32);
@@ -32,8 +32,8 @@ pub(crate) struct SurfaceState {
     requested_size: (u32, u32),
     // 描画先の大きさ（反映済み）
     current_size: (u32, u32),
-    // サーフェスごとに 1 つ。同じサーフェスの DrawManager3D 間で共有する（§11 深度バッファ）
-    depth: Option<(wgpu::Texture, wgpu::TextureView)>,
+    // 深度バッファ（サーフェスごとに 1 つ、§11 深度バッファ）とアンチエイリアスの描画先（§11 アンチエイリアス）
+    targets: Option<FrameTargets>,
     pub anti_aliasing: AntiAliasing,
     pending_anti_aliasing: Option<AntiAliasing>,
     // TAA の履歴を捨てるか（§11 カメラのカット）。TAA は段階 8 で使う
@@ -98,7 +98,7 @@ impl SurfaceState {
             target,
             requested_size: (width, height),
             current_size: (0, 0),
-            depth: None,
+            targets: None,
             anti_aliasing,
             pending_anti_aliasing: None,
             history_invalidated: true,
@@ -222,28 +222,14 @@ impl SurfaceState {
         }
     }
 
-    // 描画先と同じ大きさの深度バッファ。大きさが変わっていれば作り直す（§11 深度バッファ）
-    pub(crate) fn depth_view(&mut self, device: &wgpu::Device) -> wgpu::TextureView {
-        let (width, height) = self.current_size;
-        let outdated = self.depth.as_ref().is_none_or(|(texture, _)| (texture.width(), texture.height()) != (width, height));
+    // 描画先の大きさ・アンチエイリアスの方式に合わせて、深度バッファなどを用意する。作り直したら true（TAA の履歴がない）
+    pub(crate) fn prepare_targets(&mut self, device: &wgpu::Device, motion_format: MotionVectorFormat) -> bool {
+        let format = self.format();
+        FrameTargets::ensure(&mut self.targets, device, self.current_size, self.anti_aliasing, format, motion_format)
+    }
 
-        if outdated {
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("Lonas depth"),
-                size: wgpu::Extent3d { width: width.max(1), height: height.max(1), depth_or_array_layers: 1 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: DEPTH_FORMAT,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                view_formats: &[],
-            });
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-            self.depth = Some((texture, view));
-        }
-
-        self.depth.as_ref().unwrap().1.clone()
+    pub(crate) fn targets(&mut self) -> &mut FrameTargets {
+        self.targets.as_mut().expect("prepare_targets を先に呼ぶこと")
     }
 
     // テストで、描いた画像を RGBA の行の並びとして読み戻す

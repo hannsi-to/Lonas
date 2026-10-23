@@ -298,8 +298,8 @@ macro_rules! draw_manager {
                 &mut self.core
             }
 
-            fn camera_frames(&self, viewport_size: Vector2f) -> Vec<Option<CameraFrame>> {
-                self.cameras.slots().map(|camera| camera.map(|camera| self.camera_frame(camera, viewport_size))).collect()
+            fn camera_frames(&self, viewport_size: Vector2f, jitter: Vector2f) -> Vec<Option<CameraFrame>> {
+                self.cameras.slots().map(|camera| camera.map(|camera| self.camera_frame(camera, viewport_size, jitter))).collect()
             }
 
             fn camera_slot(&self, id: CameraId) -> u32 {
@@ -322,11 +322,11 @@ impl DrawManager2D {
         Camera2D::projection(self.core.coordinate_system.origin_2d, viewport_size) * camera.view()
     }
 
-    fn camera_frame(&self, camera: &Camera2D, viewport_size: Vector2f) -> CameraFrame {
+    fn camera_frame(&self, camera: &Camera2D, viewport_size: Vector2f, jitter: Vector2f) -> CameraFrame {
         let projection = Camera2D::projection(self.core.coordinate_system.origin_2d, viewport_size);
 
         CameraFrame {
-            camera: GpuCamera::new(camera.view(), projection, camera.position.extend(0.0), viewport_size),
+            camera: GpuCamera::new(camera.view(), projection, camera.position.extend(0.0), viewport_size, jitter),
             depth_range: [0.0, 1.0],
         }
     }
@@ -347,11 +347,11 @@ impl DrawManager3D {
         self.cameras.get_mut(id).look_at(target, up, handedness);
     }
 
-    fn camera_frame(&self, camera: &Camera3D, viewport_size: Vector2f) -> CameraFrame {
+    fn camera_frame(&self, camera: &Camera3D, viewport_size: Vector2f, jitter: Vector2f) -> CameraFrame {
         let projection = camera.projection(self.core.coordinate_system.handedness_3d, viewport_size);
 
         CameraFrame {
-            camera: GpuCamera::new(camera.view(), projection, camera.position, viewport_size),
+            camera: GpuCamera::new(camera.view(), projection, camera.position, viewport_size, jitter),
             depth_range: [camera.near, camera.far],
         }
     }

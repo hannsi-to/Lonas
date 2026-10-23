@@ -29,6 +29,8 @@ pub(crate) struct Heap {
     // Static 領域の詰め直しに使う一時バッファ。同じバッファ内ではコピーできないため（§6）
     temporary: Option<wgpu::Buffer>,
     compaction_threshold: f32,
+    // 前のフレームのインスタンス（TAA の動きのベクトル用、§2 end 時の更新条件）
+    previous: HashMap<SpaceKind, wgpu::Buffer>,
 }
 
 impl Heap {
@@ -44,11 +46,16 @@ impl Heap {
             growth_factor: config.dynamic_growth_factor,
             temporary: None,
             compaction_threshold: config.static_compaction_threshold,
+            previous: HashMap::new(),
         }
     }
 
     pub(crate) fn buffer(&self, kind: SpaceKind) -> Option<&wgpu::Buffer> {
         self.spaces.get(&kind).map(|space| &space.buffer)
+    }
+
+    pub(crate) fn previous_buffer(&self, kind: SpaceKind) -> Option<&wgpu::Buffer> {
+        self.previous.get(&kind)
     }
 
     // 領域の先頭の位置（要素の数）
@@ -84,6 +91,7 @@ impl Heap {
         encoder: &mut wgpu::CommandEncoder,
         managers: &mut [&mut DrawManagerCore],
         frame: u64,
+        keep_previous_instances: bool,
     ) {
         for manager in managers.iter_mut() {
             for request in &manager.heap_requests {
@@ -114,6 +122,21 @@ impl Heap {
         for space in self.spaces.values_mut() {
             space.memory.compact_if_needed(self.compaction_threshold);
             self.temporary = grow_buffer(device, encoder, space, self.temporary.take());
+        }
+
+        // TAA を使うサーフェスがあれば、転送の前にインスタンスの現在の値を前のフレーム用へ写す（§2）
+        // このフレームで確保し直したインスタンスは位置が変わるため、そのフレームだけ前の値が合わない
+        if keep_previous_instances {
+            for (&kind, space) in self.spaces.iter().filter(|(kind, _)| matches!(kind, SpaceKind::Instance2D | SpaceKind::Instance3D)) {
+                let size = space.buffer.size();
+                let previous = self.previous.entry(kind).or_insert_with(|| create_buffer(device, "Lonas previous instances", size, space.usage));
+
+                if previous.size() < size {
+                    *previous = create_buffer(device, "Lonas previous instances", size, space.usage);
+                }
+
+                encoder.copy_buffer_to_buffer(&space.buffer, 0, previous, 0, size);
+            }
         }
 
         for manager in managers.iter() {

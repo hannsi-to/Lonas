@@ -93,17 +93,18 @@ pub(crate) struct GpuCamera {
 const _: () = assert!(size_of::<GpuCamera>() == crate::wgsl::CAMERA_SIZE as usize);
 
 impl GpuCamera {
-    // ジッター（TAA）は段階 8 で加える
-    pub(crate) fn new(view: Matrix4f, projection: Matrix4f, position: Vector3f, viewport_size: Vector2f) -> Self {
-        let view_projection = (projection * view).to_cols_array();
+    // jitter は TAA のカメラのずらし（ピクセル）。view_projection だけに加える（§11 シェーダーとの約束事）
+    pub(crate) fn new(view: Matrix4f, projection: Matrix4f, position: Vector3f, viewport_size: Vector2f, jitter: Vector2f) -> Self {
+        let view_projection = projection * view;
+        let jittered = crate::render::antialiasing::jitter_matrix(jitter, viewport_size) * view_projection;
 
         Self {
-            view_projection,
-            view_projection_no_jitter: view_projection,
+            view_projection: jittered.to_cols_array(),
+            view_projection_no_jitter: view_projection.to_cols_array(),
             view: view.to_cols_array(),
             position: position.extend(0.0).to_array(),
             viewport_size: viewport_size.to_array(),
-            jitter: [0.0; 2],
+            jitter: jitter.to_array(),
         }
     }
 }

@@ -16,7 +16,7 @@ use crate::error::LonasError;
 use crate::math::Vector2f;
 use crate::resource::ResourceManager;
 use crate::draw::{Dimension, DrawManagerCore};
-use crate::render::Renderer;
+use crate::render::{self, Renderer, TargetFormat};
 use crate::{color::Color, memory::ManagerId};
 use frame::FrameClock;
 use heap::Heap;
@@ -30,7 +30,8 @@ pub(crate) mod sealed {
     pub trait Sealed {
         fn core(&mut self) -> &mut crate::draw::DrawManagerCore;
         // 描くサーフェスの大きさから求めた、カメラの番号ごとの値
-        fn camera_frames(&self, viewport_size: crate::math::Vector2f) -> Vec<Option<crate::draw::CameraFrame>>;
+        // jitter は TAA のカメラのずらし（ピクセル）。TAA 以外は 0
+        fn camera_frames(&self, viewport_size: crate::math::Vector2f, jitter: crate::math::Vector2f) -> Vec<Option<crate::draw::CameraFrame>>;
         fn camera_slot(&self, id: crate::draw::CameraId) -> u32;
     }
 }
@@ -232,22 +233,31 @@ impl GpuContext {
             // 2. リソースの反映
             self.renderer.apply_resource_changes(&self.device, &self.queue, resource_manager);
 
-            // 3. ヒープの処理
-            self.heap.process(&self.device, &mut encoder, &mut managers, frame);
+            // 3. ヒープの処理。TAA を使うサーフェスがあれば、インスタンスの前のフレームの値を残す
+            let keep_previous = surfaces_use_taa(&self.surfaces, &seen);
+            self.heap.process(&self.device, &mut encoder, &mut managers, frame, keep_previous);
         }
 
         // 4. カメラ・5. Compute：DrawManager* ごとに描画の順を決め、引数とインスタンス番号のリストを書かせる
+        let motion_format = self.config.taa.motion_vector_format;
         let mut prepared = Vec::new();
 
         for draw in surfaces.iter_mut() {
             let surface = self.surfaces.get(draw.surface.0 as usize);
             let (width, height) = surface.map_or((1, 1), |surface| surface.size());
             let viewport = Vector2f::new(width.max(1) as f32, height.max(1) as f32);
-            let format = surface.map_or(wgpu::TextureFormat::Rgba8UnormSrgb, |surface| surface.format());
+            let anti_aliasing = surface.map_or(AntiAliasing::None, |surface| surface.anti_aliasing);
+            let target = TargetFormat {
+                color: surface.map_or(wgpu::TextureFormat::Rgba8UnormSrgb, |surface| surface.format()),
+                sample_count: render::antialiasing::sample_count(anti_aliasing),
+                motion: (anti_aliasing == AntiAliasing::Taa).then(|| render::antialiasing::motion_texture_format(motion_format)),
+            };
+            // TAA はフレームごとにカメラを 1 ピクセル未満ずらす（§11 TAA で必要になるもの）
+            let jitter = if anti_aliasing == AntiAliasing::Taa { render::antialiasing::jitter(frame) } else { Vector2f::ZERO };
             let mut per_surface = Vec::new();
 
             for manager in draw.draw_managers.iter_mut() {
-                let cameras = manager.camera_frames(viewport);
+                let cameras = manager.camera_frames(viewport, jitter);
                 let commands = &manager.core().draw_commands;
                 let camera_ids: Vec<_> = commands.iter().map(|command| command.settings.camera).collect();
                 let camera_slots: Vec<u32> = camera_ids.into_iter().map(|id| manager.camera_slot(id)).collect();
@@ -262,7 +272,7 @@ impl GpuContext {
                     core,
                     &cameras,
                     &camera_slots,
-                    format,
+                    target,
                     frame,
                 ));
             }
@@ -270,7 +280,7 @@ impl GpuContext {
             prepared.push(per_surface);
         }
 
-        // 6. 描画（渡されたサーフェスごと）
+        // 6. 描画（渡されたサーフェスごと）→ アンチエイリアスの後処理
         let mut presented = Vec::new();
 
         for (draw, per_surface) in surfaces.iter_mut().zip(&prepared) {
@@ -281,36 +291,52 @@ impl GpuContext {
                 #[cfg(not(test))]
                 panic!("存在しない SurfaceId です");
             };
-            let Some(target) = surface.acquire() else { continue };
-            let needs_depth = draw.draw_managers.iter_mut().any(|manager| manager.core().dimension == Dimension::Three);
-            let depth = needs_depth.then(|| surface.depth_view(&self.device));
+            let Some(acquired) = surface.acquire() else { continue };
+            let recreated = surface.prepare_targets(&self.device, motion_format);
+            let history_valid = !recreated && !surface.history_invalidated;
+            let format = surface.format();
+            let targets = surface.targets();
             let mut color_load = match draw.clear_color {
                 Some(color) => wgpu::LoadOp::Clear(to_wgpu_color(color)),
                 None => wgpu::LoadOp::Load,
             };
+            let mut motion_load = wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT);
 
             // DrawManager* ごとに描画のパスを分ける。3D は各 DrawManager3D の最初に深度をクリアする（§10）
             let pass_count = draw.draw_managers.len().max(1);
 
             for index in 0..pass_count {
                 let manager = draw.draw_managers.get_mut(index).map(|manager| manager.core());
-                let depth_attachment = match (&manager, &depth) {
-                    (Some(manager), Some(view)) if manager.dimension == Dimension::Three => Some(wgpu::RenderPassDepthStencilAttachment {
-                        view,
+                let pass_targets = targets.pass_targets(&acquired.view);
+                let depth_attachment = match &manager {
+                    Some(manager) if manager.dimension == Dimension::Three => Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &targets.depth.1,
                         // Reversed-Z のため、奥（0.0）でクリアする（§11 深度バッファ）
                         depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }),
                         stencil_ops: None,
                     }),
                     _ => None,
                 };
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("Lonas draw"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &target.view,
+                let mut attachments = vec![Some(wgpu::RenderPassColorAttachment {
+                    view: pass_targets.color,
+                    depth_slice: None,
+                    resolve_target: pass_targets.resolve,
+                    ops: wgpu::Operations { load: color_load, store: wgpu::StoreOp::Store },
+                })];
+
+                // TAA：動きのベクトル。書かないシェーダーの部分は 0（動いていない）
+                if let Some(motion) = pass_targets.motion {
+                    attachments.push(Some(wgpu::RenderPassColorAttachment {
+                        view: motion,
                         depth_slice: None,
                         resolve_target: None,
-                        ops: wgpu::Operations { load: color_load, store: wgpu::StoreOp::Store },
-                    })],
+                        ops: wgpu::Operations { load: motion_load, store: wgpu::StoreOp::Store },
+                    }));
+                }
+
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Lonas draw"),
+                    color_attachments: &attachments,
                     depth_stencil_attachment: depth_attachment,
                     timestamp_writes: None,
                     occlusion_query_set: None,
@@ -319,13 +345,16 @@ impl GpuContext {
 
                 // 画面の色のクリアは、そのサーフェスの最初の DrawManager* の描画の前だけ
                 color_load = wgpu::LoadOp::Load;
+                motion_load = wgpu::LoadOp::Load;
 
                 if let (Some(manager), Some(Some(prepared))) = (manager, per_surface.get(index)) {
                     self.renderer.draw(&mut pass, &self.heap, manager, prepared);
                 }
             }
 
-            presented.extend(target.surface_texture);
+            self.renderer.post_process(&self.device, &self.queue, &mut encoder, targets, &acquired.view, format, &self.config.taa, history_valid);
+            surface.history_invalidated = false;
+            presented.extend(acquired.surface_texture);
         }
 
         // 7. 送信：submit を 1 回行い、各サーフェスを present する
@@ -508,4 +537,9 @@ mod tests {
         assert!((color.r - 0.21404).abs() < 1e-4);
         assert_eq!((color.g, color.b, color.a), (0.0, 1.0, 0.5));
     }
+}
+
+// 渡されたサーフェスのどれかが TAA を使うか
+fn surfaces_use_taa(surfaces: &[SurfaceState], used: &HashSet<SurfaceId>) -> bool {
+    used.iter().any(|id| surfaces.get(id.0 as usize).is_some_and(|surface| surface.anti_aliasing == AntiAliasing::Taa))
 }

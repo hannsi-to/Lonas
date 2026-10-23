@@ -32,6 +32,8 @@ pub(crate) struct PipelineKey {
     // 描画先の構成（§10）
     pub color_format: wgpu::TextureFormat,
     pub sample_count: u32,
+    // TAA の動きのベクトルを書く描画先のフォーマット（§11 アンチエイリアス）
+    pub motion: Option<wgpu::TextureFormat>,
 }
 
 struct CachedPipeline {
@@ -70,7 +72,7 @@ impl PipelineCache {
 
         check_reflection(&shader.reflection, bindings, key.dimension);
 
-        let pipeline = create_pipeline(device, layout, &shader.module, key);
+        let pipeline = create_pipeline(device, layout, shader, key);
         self.pipelines.insert(key, CachedPipeline { pipeline, last_used_frame: frame });
     }
 
@@ -130,7 +132,24 @@ fn check_reflection(reflection: &ShaderReflection, bindings: &BindingConfig, dim
     check_array("texture_rects", bindings.texture_rects, TEXTURE_RECT_SIZE);
 }
 
-fn create_pipeline(device: &wgpu::Device, layout: &wgpu::PipelineLayout, module: &wgpu::ShaderModule, key: PipelineKey) -> wgpu::RenderPipeline {
+fn create_pipeline(device: &wgpu::Device, layout: &wgpu::PipelineLayout, shader: &ShaderEntry, key: PipelineKey) -> wgpu::RenderPipeline {
+    let module = &shader.module;
+    let mut targets = vec![Some(wgpu::ColorTargetState {
+        format: key.color_format,
+        blend: blend_state(key.blend),
+        write_mask: wgpu::ColorWrites::ALL,
+    })];
+
+    // TAA：動きのベクトルは @location(1)。書かないシェーダーの部分は 0（動いていない）のまま残す
+    if let Some(format) = key.motion {
+        let writes = shader.reflection.writes_fragment_output(1);
+        targets.push(Some(wgpu::ColorTargetState {
+            format,
+            blend: None,
+            write_mask: if writes { wgpu::ColorWrites::ALL } else { wgpu::ColorWrites::empty() },
+        }));
+    }
+
     let attributes = vertex_attributes(key.layout);
     let buffers = [Some(wgpu::VertexBufferLayout {
         array_stride: key.layout.stride() as u64,
@@ -174,11 +193,7 @@ fn create_pipeline(device: &wgpu::Device, layout: &wgpu::PipelineLayout, module:
             module,
             entry_point: None,
             compilation_options: Default::default(),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: key.color_format,
-                blend: blend_state(key.blend),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
+            targets: &targets,
         }),
         multiview_mask: None,
         cache: None,
