@@ -316,8 +316,8 @@ impl TestApplication {
         // 行列が必要な場合は、描く大きさを渡して求める（§11 Camera）
         let size = self.gpu.surface_size(self.main_surface);
         let id = self.draw_manager_2d.default_camera_id();
-        let inverse = self.draw_manager_2d.camera(id).view_projection(size).inverse();
-        inverse.transform_point2(mouse) // 仮の名前（数学型の関数は実装時に足す、§11 数学型）
+        let inverse = self.draw_manager_2d.camera(id).view_projection(size).inverse().expect("カメラの行列は逆行列を持つ");
+        inverse.transform_point2(mouse)
     }
 
     pub fn set_vsync(&mut self, enabled: bool) -> Result<(), LonasError> {

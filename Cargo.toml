@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+bytemuck = { version = "1.25.2", features = ["derive"] }
+log = "0.4.34"
 
 [features]
 # examples/test1.rs は DESIGN.md の API のサンプル。実装が追いつくまでビルドしない

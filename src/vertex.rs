@@ -1,3 +1,5 @@
+use crate::color::srgb_to_linear;
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Vertex {
@@ -74,5 +76,92 @@ impl Vertex {
             0.0,
             0.0,
         )
+    }
+}
+
+// DrawManager* ごとに選ぶ頂点の要素（§10 頂点の並び方）。要素は前から順に足していく形
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum VertexLayout {
+    Position,              // 12 バイト
+    PositionColor,         // 28 バイト
+    PositionColorUv,       // 36 バイト
+    PositionColorUvNormal, // 48 バイト
+}
+
+impl VertexLayout {
+    // GPU 上の 1 頂点の大きさ（バイト）
+    pub const fn stride(self) -> usize {
+        self.float_count() * size_of::<f32>()
+    }
+
+    const fn float_count(self) -> usize {
+        match self {
+            VertexLayout::Position => 3,
+            VertexLayout::PositionColor => 7,
+            VertexLayout::PositionColorUv => 9,
+            VertexLayout::PositionColorUvNormal => 12,
+        }
+    }
+}
+
+impl Vertex {
+    #[allow(dead_code)] // 段階 5（Object の転送）で使う
+    // VertexLayout に含まれる要素だけを詰めて dst に書く。色は線形に変換する（§10 頂点の並び方・§11 色）
+    // dst の大きさは layout.stride() と同じであること
+    pub(crate) fn write_packed(&self, layout: VertexLayout, dst: &mut [u8]) {
+        let values = [
+            self.x,
+            self.y,
+            self.z,
+            srgb_to_linear(self.r),
+            srgb_to_linear(self.g),
+            srgb_to_linear(self.b),
+            self.a,
+            self.u,
+            self.v,
+            self.n_x,
+            self.n_y,
+            self.n_z,
+        ];
+
+        dst.copy_from_slice(bytemuck::cast_slice(&values[..layout.float_count()]));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn packed(vertex: &Vertex, layout: VertexLayout) -> Vec<f32> {
+        let mut bytes = vec![0; layout.stride()];
+        vertex.write_packed(layout, &mut bytes);
+
+        bytes.chunks_exact(4).map(|chunk| f32::from_ne_bytes(chunk.try_into().unwrap())).collect()
+    }
+
+    #[test]
+    fn strides_match_design() {
+        assert_eq!(VertexLayout::Position.stride(), 12);
+        assert_eq!(VertexLayout::PositionColor.stride(), 28);
+        assert_eq!(VertexLayout::PositionColorUv.stride(), 36);
+        assert_eq!(VertexLayout::PositionColorUvNormal.stride(), 48);
+    }
+
+    #[test]
+    fn packs_only_layout_elements_with_linear_color() {
+        let vertex = Vertex::new_position_color_uv_normal(1.0, 2.0, 3.0, 1.0, 0.0, 1.0, 0.5, 0.25, 0.75, 0.0, 1.0, 0.0);
+
+        assert_eq!(packed(&vertex, VertexLayout::Position), [1.0, 2.0, 3.0]);
+        assert_eq!(packed(&vertex, VertexLayout::PositionColor), [1.0, 2.0, 3.0, 1.0, 0.0, 1.0, 0.5]);
+        assert_eq!(
+            packed(&vertex, VertexLayout::PositionColorUvNormal),
+            [1.0, 2.0, 3.0, 1.0, 0.0, 1.0, 0.5, 0.25, 0.75, 0.0, 1.0, 0.0],
+        );
+
+        // 0.0 と 1.0 以外の色は線形に変換される
+        let gray = Vertex::new_position_color(0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 0.5);
+        let color = packed(&gray, VertexLayout::PositionColor);
+        assert!((color[3] - 0.21404).abs() < 1e-4);
+        assert_eq!(color[6], 0.5);
     }
 }

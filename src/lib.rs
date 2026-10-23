@@ -1,17 +1,6 @@
+pub mod color;
+pub mod config;
+pub mod instance;
 pub mod lonas;
+pub mod math;
 pub mod vertex;
-
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
