@@ -90,6 +90,9 @@ pub(crate) struct ObjectCore<I> {
     pub instances: InstanceSlots<I>,
     texture_changed: bool,
     pub uniform: Vec<u8>,
+    uniform_changed: bool,
+    // uniform の配列の要素（シェーダーと番号）。DrawManager* が end の時点で割り当てる（§6 uniform の領域）
+    uniform_slot: Option<(ShaderId, u32)>,
 
     allocations: Option<Allocations>,
     // 頂点から求めた境界（中心 xyz と半径）。頂点の位置が変わったフレームでのみ求め直す（§10）
@@ -138,6 +141,8 @@ impl<I: InstanceData> ObjectCore<I> {
             instances: InstanceSlots::new(id),
             texture_changed: false,
             uniform: Vec::new(),
+            uniform_changed: false,
+            uniform_slot: None,
             allocations: None,
             auto_bounds: [0.0; 4],
             warned: HashSet::new(),
@@ -232,6 +237,7 @@ impl<I: InstanceData> ObjectCore<I> {
         if self.uniform != bytes {
             self.uniform.clear();
             self.uniform.extend_from_slice(bytes);
+            self.uniform_changed = true;
         }
     }
 
@@ -276,6 +282,8 @@ impl<I: InstanceData> ObjectCore<I> {
 
             if reclaimed {
                 self.allocations = None;
+                // uniform の要素も DrawManager* が空きに戻している
+                self.uniform_slot = None;
             } else {
                 // end されたことを GC に知らせる（描かないフレームでも回収されないように）
                 manager.touched.extend(spaces.into_iter().zip(regions.map(|region| region.handle)));
@@ -293,6 +301,7 @@ impl<I: InstanceData> ObjectCore<I> {
         };
 
         self.allocations = Some(allocations);
+        self.update_uniform(manager, allocations.instance.handle);
         self.write_dirty(manager, allocations);
 
         manager.draw_commands.push(DrawCommand {
@@ -464,8 +473,8 @@ impl<I: InstanceData> ObjectCore<I> {
 
         if let Some(range) = self.instances.take_dirty_range() {
             let texture_slot = self.texture.map_or(0, TextureId::slot);
-            // uniform の番号は段階 7 で割り当てる。それまでは要素 0（§6 uniform の領域）
-            let uniform_index = 0;
+            // uniform() を呼んでいなければ要素 0（すべて 0、§6 uniform の領域）
+            let uniform_index = self.uniform_slot.map_or(0, |(_, slot)| slot);
 
             scratch.clear();
             scratch.resize((range.end - range.start) as usize * I::GPU_SIZE, 0);
@@ -481,6 +490,33 @@ impl<I: InstanceData> ObjectCore<I> {
         }
 
         manager.scratch = scratch;
+    }
+
+    // uniform の要素を割り当て、変わった値を書く（§6 uniform の領域・§2 end 時の更新条件）
+    // シェーダーを変えた場合は、古いシェーダーの要素を空きに戻し、新しいシェーダーの配列に割り当て直す
+    fn update_uniform(&mut self, manager: &mut DrawManagerCore, owner: GpuAllocation) {
+        let Some(shader) = self.shader else { return };
+
+        if self.uniform.is_empty() {
+            return;
+        }
+
+        if self.uniform_slot.map(|(current, _)| current) != Some(shader) {
+            if let Some((old_shader, old_slot)) = self.uniform_slot.take() {
+                manager.release_uniform_slot(old_shader, old_slot);
+            }
+
+            self.uniform_slot = Some((shader, manager.allocate_uniform_slot(shader, owner)));
+            self.uniform_changed = true;
+            // uniform_index を全インスタンスで書き直す
+            self.instances.mark_all_dirty();
+        }
+
+        if self.uniform_changed {
+            let (shader, slot) = self.uniform_slot.unwrap();
+            manager.push_uniform_write(shader, slot, &self.uniform);
+            self.uniform_changed = false;
+        }
     }
 
     // VertexLayout に含まれない要素を書いた場合、Object ごとに 1 回だけ警告する（§10 頂点の並び方）

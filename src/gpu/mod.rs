@@ -130,7 +130,7 @@ impl GpuContext {
             .map_err(LonasError::RequestDevice)?;
 
         let heap = Heap::new(&config);
-        let renderer = Renderer::new(&device, &config);
+        let renderer = Renderer::new(&device, &queue, &config);
 
         Ok(Self {
             instance,
@@ -230,7 +230,7 @@ impl GpuContext {
             }
 
             // 2. リソースの反映
-            self.renderer.apply_resource_changes(&self.device, resource_manager);
+            self.renderer.apply_resource_changes(&self.device, &self.queue, resource_manager);
 
             // 3. ヒープの処理
             self.heap.process(&self.device, &mut encoder, &mut managers, frame);

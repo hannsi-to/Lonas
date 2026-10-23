@@ -4,7 +4,7 @@
 pub(crate) mod camera;
 pub(crate) mod staging;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 pub use camera::{Camera2D, Camera3D, CameraId, ProjectionMode};
@@ -52,6 +52,15 @@ pub(crate) enum HeapRequest {
     Reallocate { handle: GpuAllocation, space: SpaceKind, count: u64, update: MemoryUpdateType },
     // staging バッファの chunk の range を、領域の先頭から offset 要素目の位置へコピーする
     Write { handle: GpuAllocation, space: SpaceKind, offset: u64, chunk: u32, range: Range<u64> },
+    // uniform の要素（§6 uniform の領域）。この DrawManager* と shader のバッファの slot 番目へコピーする
+    WriteUniform { shader: ShaderId, slot: u32, chunk: u32, range: Range<u64> },
+}
+
+// uniform の要素の番号の割り当て（§6 uniform の領域）。番号 0 は予約（すべて 0）
+#[derive(Debug, Default)]
+struct UniformSlots {
+    next: u32,
+    free: Vec<u32>,
 }
 
 // 段階 6 の描画で使う設定。*_when_unset は end の時点で解決済み
@@ -123,6 +132,10 @@ pub struct DrawManagerCore {
     next_serial: u32,
     // 詰めた頂点などを staging バッファへ書く前に置く場所。容量は使い回す
     pub(crate) scratch: Vec<u8>,
+    // シェーダーごとの uniform の要素の空き番号（§6 uniform の領域）
+    uniform_slots: HashMap<ShaderId, UniformSlots>,
+    // GC で回収されたときに uniform の要素を空きに戻すため、インスタンスの領域のハンドルから引く
+    uniform_owners: HashMap<GpuAllocation, (ShaderId, u32)>,
 }
 
 impl DrawManagerCore {
@@ -153,6 +166,8 @@ impl DrawManagerCore {
             reclaimed: HashSet::new(),
             next_serial: 0,
             scratch: Vec::new(),
+            uniform_slots: HashMap::new(),
+            uniform_owners: HashMap::new(),
         }
     }
 
@@ -181,7 +196,43 @@ impl DrawManagerCore {
     // ---- end_frame（GpuContext）が使う ----
 
     pub(crate) fn receive_reclaimed(&mut self, handles: impl IntoIterator<Item = GpuAllocation>) {
-        self.reclaimed.extend(handles);
+        for handle in handles {
+            // その Object* の uniform の要素も空きに戻す（§6 uniform の領域）
+            if let Some((shader, slot)) = self.uniform_owners.remove(&handle) {
+                self.release_uniform_slot(shader, slot);
+            }
+
+            self.reclaimed.insert(handle);
+        }
+    }
+
+    // uniform の要素の番号を、end の時点で割り当てる（§6 uniform の領域）。owner はインスタンスの領域のハンドル
+    pub(crate) fn allocate_uniform_slot(&mut self, shader: ShaderId, owner: GpuAllocation) -> u32 {
+        let slots = self.uniform_slots.entry(shader).or_default();
+        let slot = slots.free.pop().unwrap_or_else(|| {
+            slots.next += 1;
+            slots.next
+        });
+
+        self.uniform_owners.insert(owner, (shader, slot));
+        slot
+    }
+
+    pub(crate) fn release_uniform_slot(&mut self, shader: ShaderId, slot: u32) {
+        self.uniform_owners.retain(|_, &mut owned| owned != (shader, slot));
+        self.uniform_slots.entry(shader).or_default().free.push(slot);
+    }
+
+    // uniform の値を staging バッファに書き、WriteUniform の要求を積む。コピーのため 4 バイトの倍数に詰め物をする
+    pub(crate) fn push_uniform_write(&mut self, shader: ShaderId, slot: u32, bytes: &[u8]) {
+        let mut padded = std::mem::take(&mut self.scratch);
+        padded.clear();
+        padded.extend_from_slice(bytes);
+        padded.resize(bytes.len().div_ceil(4) * 4, 0);
+
+        let (chunk, range) = self.staging.write(&padded);
+        self.heap_requests.push(HeapRequest::WriteUniform { shader, slot, chunk, range });
+        self.scratch = padded;
     }
 
     // end_frame で処理した後に、コマンドと要求を消す

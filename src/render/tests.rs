@@ -58,8 +58,15 @@ struct Scene {
     shader: ShaderId,
 }
 
+// 画素の色を確かめるため、テクスチャは補間しない（Nearest）
+fn test_config() -> crate::config::LonasConfig {
+    let mut config = sample_config();
+    config.texture_atlas.filter = crate::config::FilterMode::Nearest;
+    config
+}
+
 fn scene(shader: &str) -> Option<Scene> {
-    let mut gpu = match GpuContext::new_headless(sample_config()) {
+    let mut gpu = match GpuContext::new_headless(test_config()) {
         Ok(gpu) => gpu,
         Err(error) => {
             eprintln!("GPU を使うテストを飛ばします: {error}");
@@ -299,5 +306,227 @@ fn unregistered_shader_panics_at_end_frame() {
     let mut object = square_object_2d(&scene, Color::WHITE, Vector2f::ZERO);
 
     scene.resources.unregister_shader(scene.shader);
+    draw_2d(&mut scene, &mut manager, &mut [&mut object], 8.0);
+}
+
+// ---- テクスチャアトラスと uniform（段階 7）----
+
+const SHADER_TEXTURED: &str = "
+@group(0) @binding(0) var<uniform> camera: Camera;
+@group(0) @binding(1) var<storage, read> instances: array<Instance2D>;
+@group(0) @binding(2) var<storage, read> instance_order: array<u32>;
+@group(1) @binding(0) var atlas: texture_2d_array<f32>;
+@group(1) @binding(1) var atlas_sampler: sampler;
+@group(1) @binding(2) var<storage, read> texture_rects: array<TextureRect>;
+
+struct VertexOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) @interpolate(flat) texture_slot: u32,
+}
+
+@vertex
+fn vs(@location(0) position: vec3<f32>, @location(1) color: vec4<f32>, @location(2) uv: vec2<f32>, @builtin(instance_index) index: u32) -> VertexOut {
+    let inst = instances[instance_order[index]];
+    let world = position.xy * inst.scale + inst.position;
+    return VertexOut(camera.view_projection * vec4(world, 0.0, 1.0), uv, inst.texture_slot);
+}
+
+@fragment
+fn fs(in: VertexOut) -> @location(0) vec4<f32> {
+    let t = texture_rects[in.texture_slot];
+    return textureSampleLevel(atlas, atlas_sampler, t.rect.xy + in.uv * t.rect.zw, t.layer, 0.0);
+}
+";
+
+const SHADER_UNIFORM: &str = "
+struct Tint { color: vec4<f32> }
+
+@group(0) @binding(0) var<uniform> camera: Camera;
+@group(0) @binding(1) var<storage, read> instances: array<Instance2D>;
+@group(0) @binding(2) var<storage, read> instance_order: array<u32>;
+@group(2) @binding(0) var<storage, read> uniforms: array<Tint>;
+
+struct VertexOut { @builtin(position) clip: vec4<f32>, @location(0) @interpolate(flat) uniform_index: u32 }
+
+@vertex
+fn vs(@location(0) position: vec3<f32>, @builtin(instance_index) index: u32) -> VertexOut {
+    let inst = instances[instance_order[index]];
+    let world = position.xy * inst.scale + inst.position;
+    return VertexOut(camera.view_projection * vec4(world, 0.0, 1.0), inst.uniform_index);
+}
+
+@fragment
+fn fs(in: VertexOut) -> @location(0) vec4<f32> { return uniforms[in.uniform_index].color; }
+";
+
+fn textured_square(scene: &Scene, position: Vector2f) -> Object2D {
+    let mut object = Object2D::new(&scene.gpu);
+    object.memory_update_type(MemoryUpdateType::Static).topology(Topology::TriangleFan).shader(scene.shader).cull_mode(CullMode::None);
+    object.add_instance(Instance2D { position, ..Instance2D::default() });
+    object
+}
+
+fn draw_textured(scene: &mut Scene, manager: &mut DrawManager2D, objects: &mut [&mut Object2D]) -> Vec<[u8; 4]> {
+    scene.gpu.begin_frame();
+
+    for object in objects.iter_mut() {
+        object.begin();
+        for (x, y, u, v) in [(0.0, 0.0, 0.0, 0.0), (32.0, 0.0, 1.0, 0.0), (32.0, 32.0, 1.0, 1.0), (0.0, 32.0, 0.0, 1.0)] {
+            object.vertex_color_uv(x, y, 1.0, 1.0, 1.0, 1.0, u, v);
+        }
+        object.end(manager);
+    }
+
+    scene.gpu.end_frame(&mut scene.resources, &mut [SurfaceDraw {
+        surface: scene.surface,
+        clear_color: Some(Color::BLACK),
+        draw_managers: &mut [manager],
+    }]);
+
+    scene.gpu.read_pixels(scene.surface)
+}
+
+fn manager_uv(scene: &mut Scene) -> DrawManager2D {
+    DrawManager2D::new(&mut scene.gpu, Camera2D { position: Vector2f::ZERO, rotation: 0.0, zoom: 1.0 }, VertexLayout::PositionColorUv)
+}
+
+const QUADRANTS: [u8; 16] = [255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255];
+
+#[test]
+fn textured_sprite_and_missing_texture() {
+    let Some(mut scene) = scene(SHADER_TEXTURED) else { return };
+    let mut manager = manager_uv(&mut scene);
+    // 2×2：左上 赤、右上 緑、左下 青、右下 白
+    let texture = scene.resources.register_texture_rgba(2, 2, &QUADRANTS).unwrap();
+    let mut sprite = textured_square(&scene, Vector2f::ZERO);
+    let mut missing = textured_square(&scene, Vector2f::new(32.0, 32.0));
+    sprite.texture(texture);
+
+    let pixels = draw_textured(&mut scene, &mut manager, &mut [&mut sprite, &mut missing]);
+
+    assert_color(pixel(&pixels, 8, 8), [255, 0, 0], "左上");
+    assert_color(pixel(&pixels, 24, 8), [0, 255, 0], "右上");
+    assert_color(pixel(&pixels, 8, 24), [0, 0, 255], "左下");
+    assert_color(pixel(&pixels, 24, 24), [255, 255, 255], "右下");
+    // texture() を呼ばなかった Object はピンク紫
+    assert_color(pixel(&pixels, 48, 48), [255, 0, 255], "テクスチャ未指定");
+}
+
+#[test]
+fn atlas_grows_layers_and_keeps_contents() {
+    let mut config = test_config();
+    config.texture_atlas.size = 64;
+    config.texture_atlas.padding = 0;
+    config.texture_atlas.mip_level_count = 1;
+    config.texture_atlas.initial_layers = 1;
+    config.texture_atlas.max_layers = 4;
+
+    let Ok(mut gpu) = GpuContext::new_headless(config) else { return };
+    let surface = gpu.add_offscreen(SIZE, SIZE);
+    let mut resources = ResourceManager::new();
+    let shader = resources.register_shader(&format!("{STRUCTS}{SHADER_TEXTURED}")).unwrap();
+    let mut scene = Scene { gpu, surface, resources, shader };
+    let mut manager = manager_uv(&mut scene);
+    let first = scene.resources.register_texture_rgba(2, 2, &QUADRANTS).unwrap();
+    let mut sprite = textured_square(&scene, Vector2f::ZERO);
+    sprite.texture(first);
+    draw_textured(&mut scene, &mut manager, &mut [&mut sprite]);
+
+    // 1 レイヤーに 48×48 は 1 つしか入らないため、レイヤーが増える
+    let big = vec![255; 48 * 48 * 4];
+    for _ in 0..3 {
+        scene.resources.register_texture_rgba(48, 48, &big).unwrap();
+    }
+
+    let pixels = draw_textured(&mut scene, &mut manager, &mut [&mut sprite]);
+    assert!(scene.gpu.renderer().atlas().layer_count() >= 3);
+    // レイヤーを増やすときにコピーしたため、最初のテクスチャもそのまま
+    assert_color(pixel(&pixels, 8, 8), [255, 0, 0], "コピー後の左上");
+    assert_color(pixel(&pixels, 24, 24), [255, 255, 255], "コピー後の右下");
+}
+
+#[test]
+fn mipmaps_average_the_level_above() {
+    let Some(mut scene) = scene(SHADER_TEXTURED) else { return };
+    let mut manager = manager_uv(&mut scene);
+    // 縦縞（赤と青が 1 画素ごと）。1 段下では平均の紫になる
+    let stripes: Vec<u8> = (0..8 * 8).flat_map(|i| if i % 2 == 0 { [255, 0, 0, 255] } else { [0, 0, 255, 255] }).collect();
+    let texture = scene.resources.register_texture_rgba(8, 8, &stripes).unwrap();
+    draw_textured(&mut scene, &mut manager, &mut []);
+
+    let placement = scene.gpu.renderer().atlas().placement(texture.slot()).unwrap();
+    let atlas = scene.gpu.renderer().atlas().texture();
+    let device = scene.gpu.device();
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: 256,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&Default::default());
+
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: atlas,
+            mip_level: 1,
+            origin: wgpu::Origin3d { x: (placement.inner_x >> 1) + 1, y: (placement.inner_y >> 1) + 1, z: placement.layer },
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo { buffer: &readback, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(256), rows_per_image: None } },
+        wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+    );
+    scene.gpu.queue().submit([encoder.finish()]);
+    readback.map_async(wgpu::MapMode::Read, .., |result| result.unwrap());
+    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+
+    let data = readback.get_mapped_range(..).unwrap();
+    // 線形で 0.5 ずつ混ぜた色を sRGB にすると約 188
+    assert_color([data[0], data[1], data[2], data[3]], [188, 0, 188], "ミップマップの 1 段目");
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct Tint {
+    color: [f32; 4],
+}
+
+fn uniform_square(scene: &Scene, position: Vector2f, color: [f32; 4]) -> Object2D {
+    let mut object = Object2D::new(&scene.gpu);
+    object.memory_update_type(MemoryUpdateType::Static).topology(Topology::TriangleFan).shader(scene.shader).cull_mode(CullMode::None);
+    object.uniform(&Tint { color });
+    object.add_instance(Instance2D { position, ..Instance2D::default() });
+    object
+}
+
+#[test]
+fn uniforms_are_per_object_and_batched() {
+    let Some(mut scene) = scene(SHADER_UNIFORM) else { return };
+    let mut manager = manager_2d(&mut scene);
+    let mut red = uniform_square(&scene, Vector2f::ZERO, [1.0, 0.0, 0.0, 1.0]);
+    let mut blue = uniform_square(&scene, Vector2f::new(32.0, 0.0), [0.0, 0.0, 1.0, 1.0]);
+
+    let pixels = draw_2d(&mut scene, &mut manager, &mut [&mut red, &mut blue], 32.0);
+    assert_color(pixel(&pixels, 8, 8), [255, 0, 0], "赤の uniform");
+    assert_color(pixel(&pixels, 40, 8), [0, 0, 255], "青の uniform");
+    // uniform が違っても、同じシェーダーなら 1 回の DrawCall にまとまる
+    assert_eq!(manager.core.resources.as_ref().unwrap().last_batches, vec![(0, 2)]);
+
+    // 値を変えた Object だけ見た目が変わる
+    red.uniform(&Tint { color: [0.0, 1.0, 0.0, 1.0] });
+    let pixels = draw_2d(&mut scene, &mut manager, &mut [&mut red, &mut blue], 32.0);
+    assert_color(pixel(&pixels, 8, 8), [0, 255, 0], "変えた uniform");
+    assert_color(pixel(&pixels, 40, 8), [0, 0, 255], "変えていない uniform");
+}
+
+#[test]
+#[should_panic(expected = "uniform の要素の大きさ")]
+fn uniform_size_mismatch_panics() {
+    let Some(mut scene) = scene(SHADER_UNIFORM) else { panic!("uniform の要素の大きさ（GPU なし）") };
+    let mut manager = manager_2d(&mut scene);
+    let mut object = square_object_2d(&scene, Color::WHITE, Vector2f::ZERO);
+    // シェーダーの Tint は 16 バイト
+    object.uniform(&[1.0f32, 2.0]);
+
     draw_2d(&mut scene, &mut manager, &mut [&mut object], 8.0);
 }

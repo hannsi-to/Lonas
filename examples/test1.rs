@@ -1,4 +1,5 @@
-// DESIGN.md の API に沿ったユーザー側のサンプル（ウィンドウは持たない。API の書き心地を確かめるためのもの）
+// DESIGN.md の API に沿ったユーザー側のサンプル
+// cargo run --example test1（T：TAA への切り替えとカメラのカット、V：垂直同期の切り替え）
 
 use Lonas::lonas::{self,
     AntiAliasing, Backend, BindingConfig, BindingSlot, Blend, Camera2D, Camera3D, Color, CoordinateSystemConfig, CullMode,
@@ -8,9 +9,67 @@ use Lonas::lonas::{self,
     TextureAtlasConfig, TextureId, Topology, UpAxis, Vector2f, Vector3f, VertexLayout, Visibility,
 };
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+use std::sync::Arc;
+use winit::application::ApplicationHandler;
+use winit::event::{ElementState, KeyEvent, WindowEvent};
+use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::keyboard::{Key, NamedKey};
+use winit::window::{Window, WindowId};
 
 fn main() {
     // ウィンドウとイベントループはユーザー側（winit など）が持つ（§8）
+    EventLoop::new().unwrap().run_app(&mut App::default()).unwrap();
+}
+
+#[derive(Default)]
+struct App {
+    window: Option<Arc<Window>>,
+    application: Option<TestApplication>,
+    vsync: bool,
+}
+
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_some() {
+            return;
+        }
+
+        let window = Arc::new(event_loop.create_window(Window::default_attributes().with_title("Lonas: test1")).unwrap());
+        let size = window.inner_size();
+
+        // ウィンドウは GpuContext が持ち続けるため、Arc を複製して渡す
+        self.application = Some(TestApplication::init(window.clone(), size.width, size.height).unwrap());
+        self.window = Some(window);
+        self.vsync = true;
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
+        let (Some(window), Some(application)) = (&self.window, &mut self.application) else { return };
+
+        match event {
+            WindowEvent::CloseRequested => {
+                application.finish();
+                event_loop.exit();
+            }
+            WindowEvent::Resized(size) => application.resize(size.width, size.height),
+            WindowEvent::KeyboardInput { event: KeyEvent { logical_key, state: ElementState::Pressed, .. }, .. } => {
+                match logical_key {
+                    Key::Character(c) if c == "t" => application.switch_scene().unwrap(),
+                    Key::Character(c) if c == "v" => {
+                        self.vsync = !self.vsync;
+                        application.set_vsync(self.vsync).unwrap();
+                    }
+                    Key::Named(NamedKey::Escape) => event_loop.exit(),
+                    _ => {}
+                }
+            }
+            WindowEvent::RedrawRequested => {
+                application.draw_loop();
+                window.request_redraw();
+            }
+            _ => {}
+        }
+    }
 }
 
 // 2D のシェーダーの例。Camera / Instance2D / TextureRect は lonas::wgsl::STRUCTS が定義する（§11 シェーダーとの約束事）
@@ -62,11 +121,45 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
 }
 "#;
 
-// 3D のシェーダー（省略）。uniform を storage の配列で受け取る（§11 uniform）
+// 3D のシェーダー。uniform を storage の配列で受け取る（§11 uniform）
 const MESH_WGSL: &str = r#"
 struct Wave { time: f32, amplitude: f32, _pad: vec2<f32> }
+
+@group(0) @binding(0) var<uniform> camera: Camera;
+@group(0) @binding(1) var<storage, read> instances: array<Instance3D>;
+@group(0) @binding(2) var<storage, read> instance_order: array<u32>;
 @group(2) @binding(0) var<storage, read> uniforms: array<Wave>;
-// ... let wave = uniforms[inst.uniform_index];
+
+struct VertexIn {
+    @location(0) position: vec3<f32>,
+    @location(1) color: vec4<f32>,
+    @location(2) uv: vec2<f32>,
+    @location(3) normal: vec3<f32>,
+    @builtin(instance_index) instance_index: u32,
+}
+struct VertexOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) color: vec4<f32>,
+}
+
+@vertex
+fn vs_main(in: VertexIn) -> VertexOut {
+    let inst = instances[instance_order[in.instance_index]];
+    let wave = uniforms[inst.uniform_index];
+    // uniform の値で床を上下に揺らし、明るさを変える
+    let y = in.position.y + sin(in.position.x * 0.3 + wave.time) * wave.amplitude;
+    let light = 0.6 + 0.4 * in.normal.y * (0.75 + 0.25 * sin(wave.time));
+
+    var out: VertexOut;
+    out.clip = camera.view_projection * inst.transform * vec4(in.position.x, y, in.position.z, 1.0);
+    out.color = vec4(in.color.rgb * inst.color.rgb * light, 1.0);
+    return out;
+}
+
+@fragment
+fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
+    return in.color;
+}
 "#;
 
 // uniform に渡す型（bytemuck の Pod、§11 uniform）

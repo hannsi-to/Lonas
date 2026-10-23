@@ -10,5 +10,6 @@ pub mod memory;
 pub mod object;
 pub(crate) mod render;
 pub mod resource;
+pub(crate) mod texture;
 pub mod vertex;
 pub mod wgsl;

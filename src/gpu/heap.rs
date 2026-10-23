@@ -98,7 +98,8 @@ impl Heap {
                         space.memory.reallocate(handle, count, update);
                         space.gc.touch(handle, frame);
                     }
-                    HeapRequest::Write { .. } => {}
+                    // uniform は render が処理する（§6 uniform の領域）
+                    HeapRequest::Write { .. } | HeapRequest::WriteUniform { .. } => {}
                 }
             }
 

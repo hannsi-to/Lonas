@@ -1,5 +1,4 @@
-// 描画（§10）：シェーダー・パイプライン・Compute のパス・描画のパス
-// テクスチャアトラスと uniform は段階 7 で作る。それまでは中身のない代わりのものをバインドする
+// 描画（§10）：シェーダー・パイプライン・Compute のパス・描画のパス・テクスチャアトラス・uniform
 
 pub(crate) mod frame;
 pub(crate) mod pipeline;
@@ -9,9 +8,12 @@ mod tests;
 use std::collections::{HashMap, HashSet};
 
 use crate::config::{BindingConfig, BindingSlot, LonasConfig};
-use crate::draw::{CameraFrame, Dimension, DrawManagerCore, SpaceKind};
+use crate::draw::{CameraFrame, Dimension, DrawManagerCore, HeapRequest, SpaceKind};
 use crate::gpu::heap::Heap;
+use crate::memory::ManagerId;
+use crate::resource::shader::BindingKind;
 use crate::resource::{ResourceChange, ResourceManager, ShaderId};
+use crate::texture::atlas::Atlas;
 use frame::{DrawResources, FramePlan, PlanInput, Strides};
 use pipeline::{PipelineCache, ShaderEntry};
 
@@ -24,12 +26,13 @@ pub(crate) struct Culling {
     pub transparent_emit: wgpu::ComputePipeline,
 }
 
-// 段階 7 までの代わりのアトラス・サンプラー・texture_rects・uniform
-struct Placeholders {
-    atlas_view: wgpu::TextureView,
-    sampler: wgpu::Sampler,
-    texture_rects: wgpu::Buffer,
-    uniform: wgpu::Buffer,
+// DrawManager* × シェーダーごとの uniform の配列（§6 uniform の領域）
+struct UniformBuffer {
+    buffer: wgpu::Buffer,
+    // 要素の数
+    capacity: u32,
+    // 要素の間隔（WGSL の配列の stride）
+    stride: u64,
 }
 
 pub(crate) struct Renderer {
@@ -39,7 +42,12 @@ pub(crate) struct Renderer {
     shaders: HashMap<ShaderId, ShaderEntry>,
     pipelines: PipelineCache,
     culling: Culling,
-    placeholders: Placeholders,
+    atlas: Atlas,
+    uniforms: HashMap<(ManagerId, ShaderId), UniformBuffer>,
+    // uniform を使わないシェーダーのバインディングに置く、すべて 0 のバッファ
+    empty_uniform: wgpu::Buffer,
+    uniform_initial_elements: u32,
+    growth_factor: f32,
     strides: Strides,
     // シェーダーを指定していない Object を描かない警告を、一度だけ出す
     warned_missing_shader: HashSet<crate::object::instance_slots::ObjectId>,
@@ -49,11 +57,12 @@ pub(crate) struct Renderer {
 pub(crate) struct PreparedDraw {
     plan: FramePlan,
     layout_space: SpaceKind,
-    user_bind_groups: Vec<wgpu::BindGroup>,
+    // シェーダーごとのバインドグループ（uniform の配列がシェーダーごとのため）
+    user_bind_groups: HashMap<ShaderId, Vec<wgpu::BindGroup>>,
 }
 
 impl Renderer {
-    pub(crate) fn new(device: &wgpu::Device, config: &LonasConfig) -> Self {
+    pub(crate) fn new(device: &wgpu::Device, queue: &wgpu::Queue, config: &LonasConfig) -> Self {
         let bindings = config.bindings;
         let user_layouts = pipeline::bind_group_layouts(device, &bindings);
         let layout_refs: Vec<Option<&wgpu::BindGroupLayout>> = user_layouts.iter().map(Some).collect();
@@ -72,7 +81,16 @@ impl Renderer {
             shaders: HashMap::new(),
             pipelines: PipelineCache::new(),
             culling: create_culling(device),
-            placeholders: create_placeholders(device),
+            atlas: Atlas::new(device, queue, config),
+            uniforms: HashMap::new(),
+            empty_uniform: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Lonas empty uniform"),
+                size: 256,
+                usage: wgpu::BufferUsages::STORAGE,
+                mapped_at_creation: false,
+            }),
+            uniform_initial_elements: config.memory.uniform_initial_elements.max(1),
+            growth_factor: config.dynamic_growth_factor,
             strides: Strides {
                 camera: align(crate::wgsl::CAMERA_SIZE as u64),
                 params: align(size_of::<frame::GpuParams>() as u64),
@@ -81,8 +99,8 @@ impl Renderer {
         }
     }
 
-    // end_frame の「2. リソースの反映」。テクスチャは段階 7 で反映する
-    pub(crate) fn apply_resource_changes(&mut self, device: &wgpu::Device, resources: &mut ResourceManager) {
+    // end_frame の「2. リソースの反映」
+    pub(crate) fn apply_resource_changes(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, resources: &mut ResourceManager) {
         for change in resources.take_changes() {
             match change {
                 ResourceChange::ShaderAdded(id) => {
@@ -97,8 +115,15 @@ impl Renderer {
                 ResourceChange::ShaderRemoved(id) => {
                     self.shaders.remove(&id);
                     self.pipelines.remove_shader(id);
+                    self.uniforms.retain(|&(_, shader), _| shader != id);
                 }
-                ResourceChange::TextureAdded(_) | ResourceChange::TextureRemoved(_) => {}
+                ResourceChange::TextureAdded(id) => {
+                    // 転送した後、ResourceManager 側の画像は捨てる（§11 GPU との分担）
+                    if let Some(data) = resources.take_texture_data(id) {
+                        self.atlas.add(device, queue, id.slot(), &data);
+                    }
+                }
+                ResourceChange::TextureRemoved(id) => self.atlas.remove(id.slot()),
             }
         }
     }
@@ -136,6 +161,8 @@ impl Renderer {
                 }
             }
         }
+
+        self.write_uniforms(device, encoder, manager);
 
         if let Some(texture) = manager.draw_commands.iter().find_map(|command| command.settings.texture) {
             assert!(resources.owns_texture(texture), "別の ResourceManager の TextureId です");
@@ -179,7 +206,14 @@ impl Renderer {
             resources.last_batches = plan.batches.iter().map(|batch| (batch.args_start, batch.args_count)).collect();
         }
 
-        let user_bind_groups = self.user_bind_groups(device, resources, instance_buffer);
+        let manager_id = manager.id;
+        let mut user_bind_groups = HashMap::new();
+
+        for batch in &plan.batches {
+            user_bind_groups
+                .entry(batch.key.shader)
+                .or_insert_with(|| self.user_bind_groups(device, resources, instance_buffer, manager_id, batch.key.shader));
+        }
 
         Some(PreparedDraw { plan, layout_space: SpaceKind::Vertex(manager.layout), user_bind_groups })
     }
@@ -195,7 +229,7 @@ impl Renderer {
         for batch in &prepared.plan.batches {
             pass.set_pipeline(self.pipelines.get(&batch.key));
 
-            for (group, bind_group) in prepared.user_bind_groups.iter().enumerate() {
+            for (group, bind_group) in prepared.user_bind_groups[&batch.key.shader].iter().enumerate() {
                 let offsets = self.camera_offsets(group as u32, batch.camera);
                 pass.set_bind_group(group as u32, bind_group, &offsets);
             }
@@ -217,22 +251,78 @@ impl Renderer {
         slots.iter().map(|_| (camera as u64 * self.strides.camera) as u32).collect()
     }
 
-    fn user_bind_groups(&self, device: &wgpu::Device, resources: &DrawResources, instances: &wgpu::Buffer) -> Vec<wgpu::BindGroup> {
+    // uniform の値を、DrawManager* × シェーダーのバッファの要素へコピーする（§6 uniform の領域）
+    // 要素が足りなければ、より大きなバッファを作り、既存の内容をコピーして差し替える（別のバッファ同士のためコピーは 1 回）
+    fn write_uniforms(&mut self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, manager: &DrawManagerCore) {
+        for request in &manager.heap_requests {
+            let HeapRequest::WriteUniform { shader, slot, chunk, ref range } = *request else { continue };
+            let entry = self.shaders.get(&shader).expect("登録されていないシェーダーの uniform です");
+            let binding = self.bindings.uniform;
+            let element = entry
+                .reflection
+                .binding(binding.group, binding.binding)
+                .filter(|info| matches!(info.kind, BindingKind::Storage { read_only: true }))
+                .and_then(|info| info.array_element)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "uniform() を呼んだ Object のシェーダーに、uniform の配列（group {}, binding {} の var<storage, read> の配列）がありません",
+                        binding.group, binding.binding,
+                    )
+                });
+            let size = range.end - range.start;
+
+            // T の大きさが WGSL の要素の大きさと違う場合は panic（§11 uniform の型の検査）。4 バイトへの詰め物は許す
+            assert!(
+                size == (element.size as u64).div_ceil(4) * 4,
+                "uniform() に渡した型の大きさ（{size} バイト）が、シェーダーの uniform の要素の大きさ（{} バイト）と違います",
+                element.size,
+            );
+
+            let key = (manager.id, shader);
+            let initial = self.uniform_initial_elements;
+            let growth = self.growth_factor;
+            let stride = element.stride as u64;
+            let uniform = self.uniforms.entry(key).or_insert_with(|| UniformBuffer {
+                buffer: create_uniform_buffer(device, initial as u64 * stride),
+                capacity: initial,
+                stride,
+            });
+
+            if slot >= uniform.capacity {
+                let capacity = ((uniform.capacity as f32 * growth).ceil() as u32).max(slot + 1);
+                let buffer = create_uniform_buffer(device, capacity as u64 * stride);
+
+                encoder.copy_buffer_to_buffer(&uniform.buffer, 0, &buffer, 0, uniform.buffer.size());
+                *uniform = UniformBuffer { buffer, capacity, stride };
+            }
+
+            encoder.copy_buffer_to_buffer(manager.staging.buffer(chunk), range.start, &uniform.buffer, slot as u64 * uniform.stride, size);
+        }
+    }
+
+    fn user_bind_groups(
+        &self,
+        device: &wgpu::Device,
+        resources: &DrawResources,
+        instances: &wgpu::Buffer,
+        manager: ManagerId,
+        shader: ShaderId,
+    ) -> Vec<wgpu::BindGroup> {
         let b = &self.bindings;
         let camera = wgpu::BindingResource::Buffer(wgpu::BufferBinding {
             buffer: &resources.cameras.buffer,
             offset: 0,
             size: wgpu::BufferSize::new(crate::wgsl::CAMERA_SIZE as u64),
         });
-        let placeholders = &self.placeholders;
+        let uniform = self.uniforms.get(&(manager, shader)).map_or(&self.empty_uniform, |uniform| &uniform.buffer);
         let all = [
             (b.camera, camera.clone()),
             (b.instances, instances.as_entire_binding()),
             (b.instance_order, resources.order.buffer.as_entire_binding()),
-            (b.atlas_texture, wgpu::BindingResource::TextureView(&placeholders.atlas_view)),
-            (b.atlas_sampler, wgpu::BindingResource::Sampler(&placeholders.sampler)),
-            (b.texture_rects, placeholders.texture_rects.as_entire_binding()),
-            (b.uniform, placeholders.uniform.as_entire_binding()),
+            (b.atlas_texture, wgpu::BindingResource::TextureView(self.atlas.view())),
+            (b.atlas_sampler, wgpu::BindingResource::Sampler(self.atlas.sampler())),
+            (b.texture_rects, self.atlas.rects().as_entire_binding()),
+            (b.uniform, uniform.as_entire_binding()),
             // 前のフレームのカメラ・インスタンスは段階 8（TAA）で作る。それまでは現在と同じもの
             (b.previous_camera, camera),
             (b.previous_instances, instances.as_entire_binding()),
@@ -251,6 +341,11 @@ impl Renderer {
                 device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("Lonas user"), layout, entries: &entries })
             })
             .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn atlas(&self) -> &Atlas {
+        &self.atlas
     }
 
     #[cfg(test)]
@@ -321,34 +416,12 @@ fn create_culling(device: &wgpu::Device) -> Culling {
     }
 }
 
-fn create_placeholders(device: &wgpu::Device) -> Placeholders {
-    let atlas = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("Lonas atlas placeholder"),
-        size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING,
-        view_formats: &[],
-    });
-    let atlas_view = atlas.create_view(&wgpu::TextureViewDescriptor {
-        dimension: Some(wgpu::TextureViewDimension::D2Array),
-        ..Default::default()
-    });
-    let buffer = |label| {
-        device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some(label),
-            size: 256,
-            usage: wgpu::BufferUsages::STORAGE,
-            mapped_at_creation: false,
-        })
-    };
-
-    Placeholders {
-        atlas_view,
-        sampler: device.create_sampler(&wgpu::SamplerDescriptor::default()),
-        texture_rects: buffer("Lonas texture rects placeholder"),
-        uniform: buffer("Lonas uniform placeholder"),
-    }
+fn create_uniform_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
+    // 作った時点ですべて 0。要素 0 は予約（uniform() を呼ばなかった Object* が指す、§6 uniform の領域）
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Lonas uniform"),
+        size: size.max(256).div_ceil(4) * 4,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    })
 }

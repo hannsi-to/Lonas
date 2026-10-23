@@ -926,7 +926,7 @@ gpu.end_frame(&mut resource_manager, &mut [
 | 削除済みの `CameraId` を使う | panic（§11） |
 | 存在しない / 別の `Object*` の `InstanceId` を `update_instance` / `remove_instance` に渡す | panic（§11） |
 | 登録解除済みの `ShaderId` / `TextureId` を使う | `end_frame` で panic（§11 登録解除） |
-| `uniform()` に渡した型の大きさがシェーダーの uniform の要素と違う、またはシェーダーに uniform の配列がない | `Object*::end` で panic（§11 uniform） |
+| `uniform()` に渡した型の大きさがシェーダーの uniform の要素と違う、またはシェーダーに uniform の配列がない | `end_frame` で panic（§11 uniform） |
 | 別の `ResourceManager` の `ShaderId` / `TextureId` を使う、または `Object*` の ID と別の `ResourceManager` を `end_frame` に渡す | `end_frame` で panic（§11） |
 | 同じサーフェスを `end_frame` の `SurfaceDraw` に 2 回以上渡す | `end_frame` で panic（§11 複数ウィンドウ） |
 | `index()` も `topology()` も呼ばずに `end` | `Object*::end` で panic（§10） |
@@ -1503,6 +1503,8 @@ let color = textureSample(atlas, atlas_sampler, uv, t.layer);
 
 - 縮小したときに隣のテクスチャとにじまないよう、配置位置と余白を `2^(mip_level_count - 1)` 画素の倍数に切り上げる
 - ミップマップは `end_frame` で、登録したテクスチャの範囲（余白を含む）だけ GPU で作る
+  - **段階 7 の実装：**1 つ上の段を線形補間で読む描画のパスで作る。作る段の画素の中心は 1 つ上の段の 2×2 の画素の境目に当たるため、線形補間でちょうど 4 つの平均になる。sRGB のフォーマットのため、平均は線形の値で取られる
+  - **段階 7 で決めたこと：**画像の転送とミップマップの作成は、テクスチャごとに自分の encoder ですぐに送る。同じフレームの後の登録でレイヤーを増やしたとき（新しいテクスチャへのコピー）に、作り終えた内容をコピーできるようにするため
 - 段数が多いほど余白が増え、アトラスに詰め込める量が減る
 
 #### 容量を超えた場合
@@ -1578,8 +1580,10 @@ let u = uniforms[inst.uniform_index];
 #### 型の検査
 
 - 要素の間隔と大きさは、シェーダーを naga で解析して求める（§11 ResourceManager）。`BindingConfig::uniform` の位置にある変数の配列の要素の型を見る
-- `T` の大きさ（`size_of::<T>()`）が WGSL の要素の型の大きさと違う場合は `Object*::end` で **panic**。Lonas は要素の間隔に合わせて詰め物を入れて書き込む
-- シェーダーの `BindingConfig::uniform` の位置に変数がない、または `var<storage, read>` の配列でないのに `uniform()` を呼んだ場合は `Object*::end` で **panic**
+- `T` の大きさ（`size_of::<T>()`）が WGSL の要素の型の大きさと違う場合は **panic**。Lonas は要素の間隔に合わせて詰め物を入れて書き込む
+  - **段階 7 の実装：**判定は `end_frame` で行う（`Object*::end` はシェーダーの解析結果を持たないため）。コピーの制約のため、どちらの大きさも 4 バイトの倍数に切り上げて比べる
+  - uniform を使わないシェーダーの uniform のバインディングには、すべて 0 の小さなバッファを置く
+- シェーダーの `BindingConfig::uniform` の位置に変数がない、または `var<storage, read>` の配列でないのに `uniform()` を呼んだ場合は `end_frame` で **panic**（段階 7 の実装）
 - シェーダーを変えた場合（`shader()`）、uniform の要素を新しいシェーダーの配列に割り当て直す（§2 end 時の更新条件）。大きさが違えば上記と同じく panic
 
 ### バインドグループ・バインディング番号
