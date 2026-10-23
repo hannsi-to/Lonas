@@ -539,7 +539,7 @@ struct Block {
 
 #### サイズクラス（2 段階の分類）
 
-- 第 1 レベル `fl` = `floor(log2(size))`。2 の累乗ごとの大きな区分
+- 第 1 レベル `fl` = `floor(log2(size)) - 7`（`SMALL_SIZE` 以上の場合）。2 の累乗ごとの大きな区分。`SMALL_SIZE` 未満を `fl = 0` に使うため 7 ずらす
 - 第 2 レベル `sl` = 第 1 レベルの範囲を `SECOND_LEVEL_COUNT` 等分した区分。`sl = (size >> (fl - SLI)) - SECOND_LEVEL_COUNT`
 - 小さいサイズ（`SMALL_SIZE` 未満）は `fl = 0` にまとめ、線形に等分する（VMA と同様）
 - 各サイズクラスに空きブロックの双方向リストを持ち、空きがあるかをビットマップで管理する
@@ -548,7 +548,8 @@ struct Block {
 |---|---|---|
 | `SLI` | 5（`SECOND_LEVEL_COUNT` = 32） | VMA と同じ。サイズクラス内の無駄は最大約 1/32（約 3%） |
 | `SMALL_SIZE` | 256 バイト | これ未満は線形に分類 |
-| `FIRST_LEVEL_COUNT` | 32 | 4GB までのブロックを扱える |
+| `FIRST_LEVEL_COUNT` | 32 | 2^39 バイト（512GB）未満のブロックを扱える |
+| `MIN_BLOCK_SIZE` | 16 バイト | 分割した残りがこれ未満なら分割せず、確保したブロックに含める |
 
 #### 確保
 
