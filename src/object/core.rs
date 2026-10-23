@@ -53,6 +53,8 @@ struct Allocations {
 pub(crate) struct EndContext {
     pub camera: CameraId,
     pub layer: Option<i32>,
+    // bounding_circle / bounding_sphere で指定した境界（中心 xyz と半径）。None なら頂点から求める
+    pub bounds: Option<[f32; 4]>,
 }
 
 pub(crate) struct ObjectCore<I> {
@@ -90,6 +92,8 @@ pub(crate) struct ObjectCore<I> {
     pub uniform: Vec<u8>,
 
     allocations: Option<Allocations>,
+    // 頂点から求めた境界（中心 xyz と半径）。頂点の位置が変わったフレームでのみ求め直す（§10）
+    auto_bounds: [f32; 4],
 
     // 一度だけ出す警告（§3・§7・§10）
     warned: HashSet<&'static str>,
@@ -135,6 +139,7 @@ impl<I: InstanceData> ObjectCore<I> {
             texture_changed: false,
             uniform: Vec::new(),
             allocations: None,
+            auto_bounds: [0.0; 4],
             warned: HashSet::new(),
             had_leftover: false,
             previous_live_instances: 0,
@@ -248,6 +253,12 @@ impl<I: InstanceData> ObjectCore<I> {
 
         manager.prepare_for_end(frame);
         self.finish_vertices();
+
+        // 指定がなく、culling を行う場合だけ求める（2D で culling_2d が false なら求めない）
+        if self.positions_changed && context.bounds.is_none() && manager.culling {
+            self.auto_bounds = bounding_sphere(&self.vertices);
+        }
+
         self.finish_indices();
         self.warn_vertex_elements(manager.layout);
         self.warn_instance_growth();
@@ -259,15 +270,15 @@ impl<I: InstanceData> ObjectCore<I> {
 
         // GC で回収されていたら、初回と同じく確保し直す（§6 回収の通知）
         if let Some(allocations) = self.allocations {
-            // SpaceKind::ALL と同じ順
             let regions = [allocations.vertex, allocations.index, allocations.instance];
+            let spaces = [SpaceKind::Vertex(manager.layout), SpaceKind::Index, I::SPACE];
             let reclaimed = regions.iter().fold(false, |any, region| manager.take_reclaimed(region.handle) | any);
 
             if reclaimed {
                 self.allocations = None;
             } else {
                 // end されたことを GC に知らせる（描かないフレームでも回収されないように）
-                manager.touched.extend(SpaceKind::ALL.into_iter().zip(regions.map(|region| region.handle)));
+                manager.touched.extend(spaces.into_iter().zip(regions.map(|region| region.handle)));
             }
         }
 
@@ -299,6 +310,7 @@ impl<I: InstanceData> ObjectCore<I> {
                 camera: context.camera,
                 layer: context.layer.unwrap_or(manager.defaults.layer),
             },
+            bounds: context.bounds.unwrap_or(self.auto_bounds),
         });
     }
 
@@ -352,20 +364,20 @@ impl<I: InstanceData> ObjectCore<I> {
     }
 
     fn allocate_all(&mut self, manager: &mut DrawManagerCore, update: MemoryUpdateType) -> Allocations {
-        let stride = manager.layout.stride() as u64;
+        let layout = manager.layout;
         let capacity = instance_capacity(self.instances.len(), 0);
-        let mut region = |space: SpaceKind, count: usize, unit: u64, update: MemoryUpdateType| {
+        let mut region = |space: SpaceKind, count: usize, update: MemoryUpdateType| {
             let handle = manager.issue_handle();
 
-            manager.heap_requests.push(HeapRequest::Allocate { handle, space, size: count as u64 * unit, update });
+            manager.heap_requests.push(HeapRequest::Allocate { handle, space, count: count as u64, update });
             Region { handle, count }
         };
 
         let allocations = Allocations {
-            vertex: region(SpaceKind::Vertex, self.vertices.len(), stride, update),
-            index: region(SpaceKind::Index, self.indices.len(), 4, update),
+            vertex: region(SpaceKind::Vertex(layout), self.vertices.len(), update),
+            index: region(SpaceKind::Index, self.indices.len(), update),
             // インスタンスは常に Dynamic（§6 インスタンスの領域）
-            instance: region(SpaceKind::Instance, capacity, I::GPU_SIZE as u64, MemoryUpdateType::Dynamic),
+            instance: region(I::SPACE, capacity, MemoryUpdateType::Dynamic),
             update,
         };
 
@@ -375,37 +387,31 @@ impl<I: InstanceData> ObjectCore<I> {
 
     // 大きさ・memory_update_type が変わった領域を確保し直す（§2・§6）
     fn update_regions(&mut self, manager: &mut DrawManagerCore, mut allocations: Allocations, update: MemoryUpdateType) -> Allocations {
-        let stride = manager.layout.stride() as u64;
         let type_changed = allocations.update != update;
         let counts = [self.vertices.len(), self.indices.len()];
 
-        for (region, (count, (space, unit))) in [&mut allocations.vertex, &mut allocations.index]
+        for (region, (count, space)) in [&mut allocations.vertex, &mut allocations.index]
             .into_iter()
-            .zip(counts.into_iter().zip([(SpaceKind::Vertex, stride), (SpaceKind::Index, 4)]))
+            .zip(counts.into_iter().zip([SpaceKind::Vertex(manager.layout), SpaceKind::Index]))
         {
             let size_changed = region.count != count;
 
             if size_changed && update == MemoryUpdateType::Static && !type_changed {
                 panic!(
                     "Static の Object の{}の数が変わりました（{} → {}）。数を変える場合は先に memory_update_type(Dynamic) にしてください",
-                    if space == SpaceKind::Vertex { "頂点" } else { "インデックス（topology の変更による自動のインデックスを含む）" },
+                    if space == SpaceKind::Index { "インデックス（topology の変更による自動のインデックスを含む）" } else { "頂点" },
                     region.count,
                     count,
                 );
             }
 
             if size_changed || type_changed {
-                manager.heap_requests.push(HeapRequest::Reallocate {
-                    handle: region.handle,
-                    space,
-                    size: count as u64 * unit,
-                    update,
-                });
+                manager.heap_requests.push(HeapRequest::Reallocate { handle: region.handle, space, count: count as u64, update });
                 region.count = count;
 
                 match space {
-                    SpaceKind::Vertex => self.vertex_dirty = full_range(count),
-                    _ => self.index_dirty = full_range(count),
+                    SpaceKind::Index => self.index_dirty = full_range(count),
+                    _ => self.vertex_dirty = full_range(count),
                 }
             }
         }
@@ -415,8 +421,8 @@ impl<I: InstanceData> ObjectCore<I> {
 
             manager.heap_requests.push(HeapRequest::Reallocate {
                 handle: allocations.instance.handle,
-                space: SpaceKind::Instance,
-                size: capacity as u64 * I::GPU_SIZE as u64,
+                space: I::SPACE,
+                count: capacity as u64,
                 update: MemoryUpdateType::Dynamic,
             });
             allocations.instance.count = capacity;
@@ -447,13 +453,13 @@ impl<I: InstanceData> ObjectCore<I> {
                 vertex.write_packed(layout, dst);
             }
 
-            manager.push_write(allocations.vertex.handle, SpaceKind::Vertex, range.start as u64 * stride as u64, &scratch);
+            manager.push_write(allocations.vertex.handle, SpaceKind::Vertex(layout), range.start as u64, &scratch);
         }
 
         if let Some(range) = self.index_dirty.take() {
             let indices = &self.indices[range.start as usize..range.end as usize];
 
-            manager.push_write(allocations.index.handle, SpaceKind::Index, range.start as u64 * 4, bytemuck::cast_slice(indices));
+            manager.push_write(allocations.index.handle, SpaceKind::Index, range.start as u64, bytemuck::cast_slice(indices));
         }
 
         if let Some(range) = self.instances.take_dirty_range() {
@@ -471,7 +477,7 @@ impl<I: InstanceData> ObjectCore<I> {
                 instance.write_gpu(texture_slot, uniform_index, dst);
             }
 
-            manager.push_write(allocations.instance.handle, SpaceKind::Instance, range.start as u64 * I::GPU_SIZE as u64, &scratch);
+            manager.push_write(allocations.instance.handle, I::SPACE, range.start as u64, &scratch);
         }
 
         manager.scratch = scratch;
@@ -514,6 +520,20 @@ impl<I: InstanceData> ObjectCore<I> {
     pub(crate) fn handles(&self) -> Option<[GpuAllocation; 3]> {
         self.allocations.map(|a| [a.vertex.handle, a.index.handle, a.instance.handle])
     }
+}
+
+// 頂点を囲む球（中心は頂点の範囲の中心、半径は最も遠い頂点まで）。最小の球ではないが、1 回の走査で求まる
+fn bounding_sphere(vertices: &[Vertex]) -> [f32; 4] {
+    let Some(first) = vertices.first() else { return [0.0; 4] };
+    let position = |v: &Vertex| Vector3f::new(v.x, v.y, v.z);
+    let (min, max) = vertices.iter().fold((position(first), position(first)), |(min, max), v| {
+        let p = position(v);
+        (Vector3f::new(min.x.min(p.x), min.y.min(p.y), min.z.min(p.z)), Vector3f::new(max.x.max(p.x), max.y.max(p.y), max.z.max(p.z)))
+    });
+    let center = (min + max) * 0.5;
+    let radius = vertices.iter().map(|v| (position(v) - center).length()).fold(0.0, f32::max);
+
+    [center.x, center.y, center.z, radius]
 }
 
 // インスタンスの領域は余裕を持たせて確保し、超過時のみ確保し直す（§7）

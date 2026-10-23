@@ -440,6 +440,10 @@ impl Object2D { // Object3D も同じ
 
 **決定：頂点 / インデックス / インスタンスの用途ごとに、上記の「Static + Dynamic」のメモリ空間を持つ。**uniform はこのメモリ空間に置かず、別に持つ（§6 uniform の領域）。
 
+**決定（段階 6）：メモリ空間は要素の数を単位に管理し、要素の大きさが違うものは空間を分ける。**頂点は `VertexLayout` ごと、インデックス、`Instance2D`、`Instance3D` の空間を持つ。
+- 描画では、頂点の位置を「何番目の頂点か」（`base_vertex`）で、インスタンスを要素の番号（`instances[instance_order[i]]`）で指定する。そのため領域の先頭は要素の大きさの倍数でなければならず、バイト単位の割り当て（4 バイトに揃えるだけ）では満たせない
+- `LonasConfig::memory` の容量はバイトのまま。空間ごとに要素の大きさで割って要素の数にする。頂点の空間は、その `VertexLayout` の `DrawManager*` が初めて使ったときに作り、それぞれが設定の容量を持つ（`VertexLayout` を何種類も使うと、その数だけ容量を使う）
+
 | 用途 | Static 領域 | Dynamic 領域 |
 |---|---|---|
 | 頂点 | あり | あり |
@@ -1123,6 +1127,15 @@ end_frame（2D の DrawManager）
 - ユーザーのシェーダーは 3D と同じく `instances[instance_order[instance_index]]` で読む
 - 却下案：Compute を使わず CPU がリストを作る（視界の外を省く場合、カメラが動くたびに CPU で全インスタンスを判定することになる）
 
+#### 段階 6 で決めた描画の細部
+
+- **`DrawManager*` ごとに描画のパスを分ける。**3D の `DrawManager3D` は自分のパスの最初に深度をクリアする（§10 深度バッファとクリア）。画面の色のクリアは、そのサーフェスの最初のパスだけ
+- **ユーザーのシェーダーは、頂点とフラグメントのエントリーポイントを 1 つずつ持つ。**パイプラインはエントリーポイントの名前を指定せずに作る（wgpu が 1 つだけあるものを使う）
+- **`shader()` を呼んでいない `Object*` は描かない。**`Object*` ごとに 1 回だけ `log` で警告する
+- インスタンスの視界の判定は、カメラの行列から求めた 6 つの平面と境界の球で行う。2D も同じ処理（z は 0）
+- 3D の不透明の大まかな並べ替えは、近い〜遠いを 16 段に分けて振り分ける（`near` / `far` で正規化）
+- 3D の半透明の並べ替えは、パイプラインとカメラのまとまりごとにバイトニックソートで行う（要素数を 2 の累乗に切り上げる）
+
 #### シェーダーでのインスタンスの読み方
 
 **決定：頂点シェーダーが「インスタンス番号のリスト」を経由してインスタンスを読む部分は、ユーザーが書く。**Lonas はシェーダーを書き換えない。
@@ -1246,14 +1259,20 @@ pub enum ProjectionMode {
     Orthographic { height: f32 },
 }
 
-impl Camera2D { // Camera3D も同じ
-    pub fn view_projection(&self, viewport_size: Vector2f) -> Matrix4f; // 現在の値と描く大きさから計算して返す
+// 手系・2D の原点（LonasConfig）が必要なため、DrawManager* のメソッドにする（段階 6 で決定）
+impl DrawManager2D { // DrawManager3D も同じ
+    pub fn view_projection(&self, id: CameraId, viewport_size: Vector2f) -> Matrix4f; // 現在の値と描く大きさから計算して返す
 }
 
-impl Camera3D {
-    pub fn look_at(&mut self, target: Vector3f, up: Vector3f) -> &mut Self; // rotation を計算して設定する
+impl DrawManager3D {
+    pub fn look_at(&mut self, id: CameraId, target: Vector3f, up: Vector3f); // rotation を計算して設定する
 }
 ```
+
+- **決定（段階 6）：`look_at` と `view_projection` は `DrawManager*` のメソッドにする。**計算に手系・2D の原点が必要で、`DrawManager*` は作るときに `LonasConfig` からその値を写して持つ。カメラは値だけの構造体のまま（構造体リテラルで作れる）
+  - 却下案：カメラのメソッドで、設定を引数で受け取る（呼ぶたびに座標系を渡す必要があり、`LonasConfig` と違う値を渡すと描画と食い違う）
+  - 却下案：カメラが座標系を持つ（非公開の項目が増え、構造体リテラルで作れなくなる）
+- **決定（段階 6）：2D のカメラは、`position` のワールド座標を画面の原点（`Origin2D`）に置き、拡大（`zoom`）と回転（`rotation`）は画面の原点を中心に行う。**2D は深度を使わないため、near / far は -1 / 1（z = 0 が深度の範囲の中に入る）
 
 - **決定：`Camera3D` の向きは `rotation` だけで表す。**注視点で指定したい場合は `look_at(target, up)` が `rotation` を計算して設定する
   - 向きを表す値が 1 つだけなので、どちらを優先するかという問題が起きない
@@ -1794,6 +1813,7 @@ impl Object2D { // Object3D も同じ
 ```
 
 - `cull_mode` はパイプラインのキー（§10）に含める
+- **決定（段階 6）：画面上で反時計回りに見える面を表にする。**3D の右手系・2D の原点が `BottomLeft` / `Center` では反時計回り、3D の左手系・2D の原点が `TopLeft`（y が下向き）では時計回りの頂点の順を表にする（2D の `Polygon` は xy 平面で反時計回りに作るため、`TopLeft` では表になる）
 
 ### 色
 
@@ -1984,4 +2004,4 @@ gpu.set_anti_aliasing(surface_id, AntiAliasing::Taa)?;
 
 ## 12. 未決事項
 
-なし（2026-10-23 の通しレビューで見つかったものを含め、すべて決定済み）。新たに出た未決事項はここに追加する。
+- [ ] `UpAxis`（3D の上方向）の使い道（段階 6 で見つかった）。カメラの向きは `rotation` と、`look_at` に渡す `up` で完全に決まるため、今の実装では `UpAxis` は描画に影響しない。`look_at` の `up` を省いたときの既定値にする、項目を削除する、などを決める（§11 座標系）

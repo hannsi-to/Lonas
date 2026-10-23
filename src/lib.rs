@@ -8,6 +8,7 @@ pub mod lonas;
 pub mod math;
 pub mod memory;
 pub mod object;
+pub(crate) mod render;
 pub mod resource;
 pub mod vertex;
 pub mod wgsl;

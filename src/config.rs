@@ -80,6 +80,7 @@ pub struct BindingSlot {
     pub binding: u32,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct BindingConfig {
     pub camera: BindingSlot,
     pub instances: BindingSlot,
@@ -112,6 +113,7 @@ impl BindingConfig {
     }
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct CoordinateSystemConfig {
     pub origin_2d: Origin2D,
     pub handedness_3d: Handedness,

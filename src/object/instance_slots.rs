@@ -54,6 +54,8 @@ impl<I> fmt::Debug for InstanceId<I> {
 pub(crate) trait InstanceData: Copy {
     // GPU 上の 1 つあたりの大きさ（バイト）
     const GPU_SIZE: usize;
+    // インスタンスを置くメモリ空間
+    const SPACE: crate::draw::SpaceKind;
 
     fn with_visibility(self, visibility: Visibility) -> Self;
 
@@ -63,6 +65,7 @@ pub(crate) trait InstanceData: Copy {
 
 impl InstanceData for Instance2D {
     const GPU_SIZE: usize = crate::wgsl::INSTANCE_2D_SIZE as usize;
+    const SPACE: crate::draw::SpaceKind = crate::draw::SpaceKind::Instance2D;
 
     fn with_visibility(self, visibility: Visibility) -> Self {
         Self { visibility, ..self }
@@ -75,6 +78,7 @@ impl InstanceData for Instance2D {
 
 impl InstanceData for Instance3D {
     const GPU_SIZE: usize = crate::wgsl::INSTANCE_3D_SIZE as usize;
+    const SPACE: crate::draw::SpaceKind = crate::draw::SpaceKind::Instance3D;
 
     fn with_visibility(self, visibility: Visibility) -> Self {
         Self { visibility, ..self }

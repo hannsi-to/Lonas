@@ -15,7 +15,8 @@ use crate::config::{AntiAliasing, Backend, LonasConfig, PresentMode};
 use crate::error::LonasError;
 use crate::math::Vector2f;
 use crate::resource::ResourceManager;
-use crate::draw::DrawManagerCore;
+use crate::draw::{Dimension, DrawManagerCore};
+use crate::render::Renderer;
 use crate::{color::Color, memory::ManagerId};
 use frame::FrameClock;
 use heap::Heap;
@@ -28,6 +29,9 @@ pub trait DrawManager: sealed::Sealed {}
 pub(crate) mod sealed {
     pub trait Sealed {
         fn core(&mut self) -> &mut crate::draw::DrawManagerCore;
+        // 描くサーフェスの大きさから求めた、カメラの番号ごとの値
+        fn camera_frames(&self, viewport_size: crate::math::Vector2f) -> Vec<Option<crate::draw::CameraFrame>>;
+        fn camera_slot(&self, id: crate::draw::CameraId) -> u32;
     }
 }
 
@@ -48,6 +52,7 @@ pub struct GpuContext {
     config: LonasConfig,
     surfaces: Vec<SurfaceState>,
     heap: Heap,
+    renderer: Renderer,
     frame: FrameClock,
     next_manager_id: u32,
     // Object*::new(&gpu) で発行するため、&self で増やせるようにする（§2）
@@ -124,7 +129,8 @@ impl GpuContext {
             .await
             .map_err(LonasError::RequestDevice)?;
 
-        let heap = Heap::new(&device, &config);
+        let heap = Heap::new(&config);
+        let renderer = Renderer::new(&device, &config);
 
         Ok(Self {
             instance,
@@ -134,6 +140,7 @@ impl GpuContext {
             config,
             surfaces: Vec::new(),
             heap,
+            renderer,
             frame: FrameClock::new(),
             next_manager_id: 0,
             next_object_id: AtomicU64::new(0),
@@ -191,8 +198,8 @@ impl GpuContext {
         }
     }
 
-    // §9 の end_frame の処理の順に行う。この段階ではヒープの処理と、描画先のクリアまで
-    pub fn end_frame(&mut self, _resource_manager: &mut ResourceManager, surfaces: &mut [SurfaceDraw<'_, '_>]) {
+    // §9 の end_frame の処理の順に行う
+    pub fn end_frame(&mut self, resource_manager: &mut ResourceManager, surfaces: &mut [SurfaceDraw<'_, '_>]) {
         let state = self.frame.state();
 
         if !state.in_frame {
@@ -208,6 +215,7 @@ impl GpuContext {
             );
         }
 
+        let frame = state.number;
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Lonas frame") });
 
         {
@@ -221,47 +229,115 @@ impl GpuContext {
                 manager.staging.reclaim();
             }
 
+            // 2. リソースの反映
+            self.renderer.apply_resource_changes(&self.device, resource_manager);
+
             // 3. ヒープの処理
-            self.heap.process(&self.device, &mut encoder, &mut managers, state.number);
+            self.heap.process(&self.device, &mut encoder, &mut managers, frame);
+        }
+
+        // 4. カメラ・5. Compute：DrawManager* ごとに描画の順を決め、引数とインスタンス番号のリストを書かせる
+        let mut prepared = Vec::new();
+
+        for draw in surfaces.iter_mut() {
+            let surface = self.surfaces.get(draw.surface.0 as usize);
+            let (width, height) = surface.map_or((1, 1), |surface| surface.size());
+            let viewport = Vector2f::new(width.max(1) as f32, height.max(1) as f32);
+            let format = surface.map_or(wgpu::TextureFormat::Rgba8UnormSrgb, |surface| surface.format());
+            let mut per_surface = Vec::new();
+
+            for manager in draw.draw_managers.iter_mut() {
+                let cameras = manager.camera_frames(viewport);
+                let commands = &manager.core().draw_commands;
+                let camera_ids: Vec<_> = commands.iter().map(|command| command.settings.camera).collect();
+                let camera_slots: Vec<u32> = camera_ids.into_iter().map(|id| manager.camera_slot(id)).collect();
+                let core = manager.core();
+
+                per_surface.push(self.renderer.prepare(
+                    &self.device,
+                    &self.queue,
+                    &mut encoder,
+                    &self.heap,
+                    resource_manager,
+                    core,
+                    &cameras,
+                    &camera_slots,
+                    format,
+                    frame,
+                ));
+            }
+
+            prepared.push(per_surface);
         }
 
         // 6. 描画（渡されたサーフェスごと）
-        let mut acquired = Vec::new();
+        let mut presented = Vec::new();
 
-        for draw in surfaces.iter() {
-            let Some(texture) = self.acquire(draw.surface) else { continue };
-            let view = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let load = match draw.clear_color {
+        for (draw, per_surface) in surfaces.iter_mut().zip(&prepared) {
+            let Some(surface) = self.surfaces.get_mut(draw.surface.0 as usize) else {
+                // テストのウィンドウなしの GpuContext はサーフェスを持たないため、描かない
+                #[cfg(test)]
+                continue;
+                #[cfg(not(test))]
+                panic!("存在しない SurfaceId です");
+            };
+            let Some(target) = surface.acquire() else { continue };
+            let needs_depth = draw.draw_managers.iter_mut().any(|manager| manager.core().dimension == Dimension::Three);
+            let depth = needs_depth.then(|| surface.depth_view(&self.device));
+            let mut color_load = match draw.clear_color {
                 Some(color) => wgpu::LoadOp::Clear(to_wgpu_color(color)),
                 None => wgpu::LoadOp::Load,
             };
 
-            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Lonas surface"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
+            // DrawManager* ごとに描画のパスを分ける。3D は各 DrawManager3D の最初に深度をクリアする（§10）
+            let pass_count = draw.draw_managers.len().max(1);
 
-            acquired.push(texture);
+            for index in 0..pass_count {
+                let manager = draw.draw_managers.get_mut(index).map(|manager| manager.core());
+                let depth_attachment = match (&manager, &depth) {
+                    (Some(manager), Some(view)) if manager.dimension == Dimension::Three => Some(wgpu::RenderPassDepthStencilAttachment {
+                        view,
+                        // Reversed-Z のため、奥（0.0）でクリアする（§11 深度バッファ）
+                        depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }),
+                        stencil_ops: None,
+                    }),
+                    _ => None,
+                };
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Lonas draw"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &target.view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations { load: color_load, store: wgpu::StoreOp::Store },
+                    })],
+                    depth_stencil_attachment: depth_attachment,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+
+                // 画面の色のクリアは、そのサーフェスの最初の DrawManager* の描画の前だけ
+                color_load = wgpu::LoadOp::Load;
+
+                if let (Some(manager), Some(Some(prepared))) = (manager, per_surface.get(index)) {
+                    self.renderer.draw(&mut pass, &self.heap, manager, prepared);
+                }
+            }
+
+            presented.extend(target.surface_texture);
         }
 
         // 7. 送信：submit を 1 回行い、各サーフェスを present する
         self.queue.submit([encoder.finish()]);
 
-        for texture in acquired {
+        for texture in presented {
             self.queue.present(texture);
         }
 
         // 8. 後片付け
-        self.heap.collect_garbage(state.number, self.config.gc_unused_frames);
+        self.heap.collect_garbage(frame, self.config.gc_unused_frames);
+        self.renderer.collect_unused(frame, self.config.gc_unused_frames);
 
         for manager in surfaces.iter_mut().flat_map(|draw| draw.draw_managers.iter_mut().map(|manager| manager.core())) {
             manager.staging.recall();
@@ -270,43 +346,6 @@ impl GpuContext {
         }
 
         self.frame.end();
-    }
-
-    // 描画先を取得する。取得できない場合はそのサーフェスだけ飛ばす（§9 リサイズとフレームスキップ）
-    fn acquire(&mut self, surface: SurfaceId) -> Option<wgpu::SurfaceTexture> {
-        // テストのウィンドウなしの GpuContext はサーフェスを持たないため、描かずにヒープの処理だけを行う
-        #[cfg(test)]
-        if self.surfaces.is_empty() {
-            return None;
-        }
-
-        let state = self.surface_mut(surface);
-
-        if !state.is_drawable() {
-            return None;
-        }
-
-        match state.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(texture) => Some(texture),
-            wgpu::CurrentSurfaceTexture::Suboptimal(texture) => {
-                state.mark_outdated();
-                Some(texture)
-            }
-            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => None,
-            wgpu::CurrentSurfaceTexture::Outdated => {
-                state.mark_outdated();
-                None
-            }
-            wgpu::CurrentSurfaceTexture::Lost => {
-                log::warn!("サーフェスが失われました。次のフレームで設定し直します");
-                state.mark_outdated();
-                None
-            }
-            wgpu::CurrentSurfaceTexture::Validation => {
-                log::warn!("描画先の取得で検証エラーが起きました。このフレームは描きません");
-                None
-            }
-        }
     }
 
     fn check_anti_aliasing(&self, anti_aliasing: AntiAliasing) -> Result<(), LonasError> {
@@ -357,6 +396,23 @@ impl GpuContext {
     #[cfg(test)]
     pub(crate) fn heap(&self) -> &Heap {
         &self.heap
+    }
+
+    #[cfg(test)]
+    pub(crate) fn renderer(&self) -> &Renderer {
+        &self.renderer
+    }
+
+    // ウィンドウのない描画先を足す。描いた画像を read_pixels で読み戻せる
+    #[cfg(test)]
+    pub(crate) fn add_offscreen(&mut self, width: u32, height: u32) -> SurfaceId {
+        self.surfaces.push(SurfaceState::new_offscreen(&self.device, width, height));
+        SurfaceId((self.surfaces.len() - 1) as u32)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn read_pixels(&self, surface: SurfaceId) -> Vec<[u8; 4]> {
+        self.surface(surface).read_pixels(&self.device, &self.queue)
     }
 
     pub(crate) fn config(&self) -> &LonasConfig {

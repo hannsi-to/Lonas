@@ -1,7 +1,10 @@
 // カメラ（§5 Camera の保持・§11 Camera）。DrawManager* が持ち、CameraId で参照する
-// 行列の計算（view_projection・look_at）は段階 6 で作る
+// 行列の計算は手系・2D の原点（LonasConfig）が必要なため、DrawManager* のメソッドから行う（段階 6 で決定）
 
-use crate::math::{Quaternion, Vector2f, Vector3f};
+use bytemuck::{Pod, Zeroable};
+
+use crate::config::{Handedness, Origin2D};
+use crate::math::{Matrix4f, Quaternion, Vector2f, Vector3f};
 use crate::memory::ManagerId;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -26,6 +29,83 @@ pub struct Camera3D {
     pub fov_y: f32,
     pub near: f32,
     pub far: f32,
+}
+
+// 2D は深度を使わないため、z = 0 が深度の範囲の中に入る値にする
+const DEPTH_RANGE_2D: (f32, f32) = (-1.0, 1.0);
+
+impl Camera2D {
+    // ビュー行列。拡大と回転は 2D の原点（Origin2D）を中心に行う
+    pub(crate) fn view(&self) -> Matrix4f {
+        Matrix4f::from_scale(Vector3f::new(self.zoom, self.zoom, 1.0))
+            * Matrix4f::from_rotation(Quaternion::from_axis_angle(Vector3f::Z, -self.rotation))
+            * Matrix4f::from_translation(-self.position.extend(0.0))
+    }
+
+    // 単位はピクセル。zoom = 1.0 で 1 単位が 1 ピクセル（§11 座標系）
+    pub(crate) fn projection(origin: Origin2D, viewport_size: Vector2f) -> Matrix4f {
+        let (w, h) = (viewport_size.x, viewport_size.y);
+        let (left, right, bottom, top) = match origin {
+            Origin2D::TopLeft => (0.0, w, h, 0.0),
+            Origin2D::BottomLeft => (0.0, w, 0.0, h),
+            Origin2D::Center => (-w * 0.5, w * 0.5, -h * 0.5, h * 0.5),
+        };
+        let (near, far) = DEPTH_RANGE_2D;
+
+        Matrix4f::orthographic_off_center(left, right, bottom, top, near, far, Handedness::RightHanded)
+    }
+}
+
+impl Camera3D {
+    pub(crate) fn view(&self) -> Matrix4f {
+        Matrix4f::view(self.position, self.rotation)
+    }
+
+    pub(crate) fn projection(&self, handedness: Handedness, viewport_size: Vector2f) -> Matrix4f {
+        let aspect_ratio = viewport_size.x / viewport_size.y.max(1.0);
+
+        match self.projection_mode {
+            ProjectionMode::Perspective => Matrix4f::perspective(self.fov_y, aspect_ratio, self.near, self.far, handedness),
+            ProjectionMode::Orthographic { height } => {
+                Matrix4f::orthographic(height * aspect_ratio, height, self.near, self.far, handedness)
+            }
+        }
+    }
+
+    // target の方を向くように rotation を設定する（§11 Camera の look_at）
+    pub(crate) fn look_at(&mut self, target: Vector3f, up: Vector3f, handedness: Handedness) {
+        self.rotation = Quaternion::look_rotation(target - self.position, up, handedness);
+    }
+}
+
+// GPU に送るカメラ（WGSL の Camera、224 バイト、§11 シェーダーとの約束事）
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub(crate) struct GpuCamera {
+    pub view_projection: [f32; 16],
+    pub view_projection_no_jitter: [f32; 16],
+    pub view: [f32; 16],
+    pub position: [f32; 4],
+    pub viewport_size: [f32; 2],
+    pub jitter: [f32; 2],
+}
+
+const _: () = assert!(size_of::<GpuCamera>() == crate::wgsl::CAMERA_SIZE as usize);
+
+impl GpuCamera {
+    // ジッター（TAA）は段階 8 で加える
+    pub(crate) fn new(view: Matrix4f, projection: Matrix4f, position: Vector3f, viewport_size: Vector2f) -> Self {
+        let view_projection = (projection * view).to_cols_array();
+
+        Self {
+            view_projection,
+            view_projection_no_jitter: view_projection,
+            view: view.to_cols_array(),
+            position: position.extend(0.0).to_array(),
+            viewport_size: viewport_size.to_array(),
+            jitter: [0.0; 2],
+        }
+    }
 }
 
 // 発行元の ManagerId を持ち、別の DrawManager* の CameraId を検知する（§5 カメラの指定）
@@ -80,6 +160,17 @@ impl<C> CameraSet<C> {
     pub(crate) fn get(&self, id: CameraId) -> &C {
         self.check(id);
         self.cameras[id.index as usize].1.as_ref().unwrap()
+    }
+
+    // GPU に送るときの番号（削除したカメラの番号は空きのまま）
+    pub(crate) fn slot(&self, id: CameraId) -> u32 {
+        self.check(id);
+        id.index
+    }
+
+    // 番号の順に、カメラ（削除済みは None）をたどる
+    pub(crate) fn slots(&self) -> impl Iterator<Item = Option<&C>> {
+        self.cameras.iter().map(|(_, camera)| camera.as_ref())
     }
 
     pub(crate) fn get_mut(&mut self, id: CameraId) -> &mut C {

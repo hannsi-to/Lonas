@@ -15,13 +15,12 @@ wgpu = "30"
 [features]
 default = ["image"]
 # PNG / JPEG の読み込み（ResourceManager::register_texture）。外すと register_texture_rgba のみ（§11 画像の形式）
-# examples/test1.rs は DESIGN.md の API のサンプル。実装が追いつくまでビルドしない
-api-sample = []
 image = ["dep:image"]
-
-[[example]]
-name = "test1"
-required-features = ["api-sample"]
 
 [dev-dependencies]
 winit = "0.30"
+
+# PNG の読み込み（register_texture）を使う
+[[example]]
+name = "test1"
+required-features = ["image"]

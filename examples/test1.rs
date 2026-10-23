@@ -1,5 +1,4 @@
-// DESIGN.md の API に沿ったユーザー側のサンプル。
-// 実装がまだ追いついていないため、Cargo.toml の `api-sample` feature を有効にしたときだけビルドされる。
+// DESIGN.md の API に沿ったユーザー側のサンプル（ウィンドウは持たない。API の書き心地を確かめるためのもの）
 
 use Lonas::lonas::{self,
     AntiAliasing, Backend, BindingConfig, BindingSlot, Blend, Camera2D, Camera3D, Color, CoordinateSystemConfig, CullMode,
@@ -179,7 +178,7 @@ impl TestApplication {
             Camera2D { position: Vector2f::ZERO, rotation: 0.0, zoom: 1.0 },
             VertexLayout::PositionColorUv,
         );
-        let mut camera_3d = Camera3D {
+        let camera_3d = Camera3D {
             position: Vector3f::new(0.0, 5.0, 10.0),
             rotation: Quaternion::IDENTITY,
             projection_mode: ProjectionMode::Perspective,
@@ -187,8 +186,10 @@ impl TestApplication {
             near: 0.1,
             far: 1000.0,
         };
-        camera_3d.look_at(Vector3f::new(0.0, 0.0, 0.0), Vector3f::new(0.0, 1.0, 0.0)); // rotation を設定（§11 Camera）
-        let draw_manager_3d = DrawManager3D::new(&mut gpu, camera_3d, VertexLayout::PositionColorUvNormal);
+        let mut draw_manager_3d = DrawManager3D::new(&mut gpu, camera_3d, VertexLayout::PositionColorUvNormal);
+        // 手系が要るため、DrawManager のメソッドで rotation を設定する（§11 Camera）
+        let camera = draw_manager_3d.default_camera_id();
+        draw_manager_3d.look_at(camera, Vector3f::new(0.0, 0.0, 0.0), Vector3f::new(0.0, 1.0, 0.0));
 
         // 設定は「高頻度ではないが描画中でも呼ばれる」区分。毎フレーム呼ぶ必要はない（§1・§3）
         let mut triangle = Object2D::new(&gpu);
@@ -320,7 +321,7 @@ impl TestApplication {
         // 行列が必要な場合は、描く大きさを渡して求める（§11 Camera）
         let size = self.gpu.surface_size(self.main_surface);
         let id = self.draw_manager_2d.default_camera_id();
-        let inverse = self.draw_manager_2d.camera(id).view_projection(size).inverse().expect("カメラの行列は逆行列を持つ");
+        let inverse = self.draw_manager_2d.view_projection(id, size).inverse().expect("カメラの行列は逆行列を持つ");
         inverse.transform_point2(mouse)
     }
 

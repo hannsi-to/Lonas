@@ -7,8 +7,8 @@ use super::static_stack::{Move, StaticId, StaticStack};
 use super::tlsf::{BlockId, TlsfAllocator};
 use super::{GpuAllocation, MemoryUpdateType};
 
-// GPU のコピー（copy_buffer_to_buffer）の制約に合わせる
-const ALIGNMENT: u64 = 4;
+// 大きさと位置は要素の数で数える（gpu/heap.rs が要素の大きさを掛けてバイトにする）
+const ALIGNMENT: u64 = 1;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum Placement {

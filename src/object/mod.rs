@@ -41,7 +41,8 @@ macro_rules! object_common {
 
                 // 別の DrawManager* の CameraId・削除済みの CameraId は panic（§5・§11）
                 draw_manager.cameras.check(camera);
-                self.core.end(&mut draw_manager.core, EndContext { camera, layer: self.layer_setting() });
+                let context = EndContext { camera, layer: self.layer_setting(), bounds: self.bounds_setting() };
+                self.core.end(&mut draw_manager.core, context);
                 self
             }
 
@@ -153,7 +154,7 @@ impl Object2D {
         self
     }
 
-    // 任意。指定しなければ頂点から自動で計算する（段階 6、§10 視界の判定に使う大きさ）
+    // 任意。指定しなければ頂点から自動で計算する（§10 視界の判定に使う大きさ）
     pub fn bounding_circle(&mut self, center: Vector2f, radius: f32) -> &mut Self {
         self.bounding_circle = Some((center, radius));
         self
@@ -161,6 +162,10 @@ impl Object2D {
 
     fn layer_setting(&self) -> Option<i32> {
         self.layer
+    }
+
+    fn bounds_setting(&self) -> Option<[f32; 4]> {
+        self.bounding_circle.map(|(center, radius)| [center.x, center.y, 0.0, radius])
     }
 }
 
@@ -209,7 +214,7 @@ impl Object3D {
         self
     }
 
-    // 任意。指定しなければ頂点から自動で計算する（段階 6、§10 視界の判定に使う大きさ）
+    // 任意。指定しなければ頂点から自動で計算する（§10 視界の判定に使う大きさ）
     pub fn bounding_sphere(&mut self, center: Vector3f, radius: f32) -> &mut Self {
         self.bounding_sphere = Some((center, radius));
         self
@@ -217,5 +222,9 @@ impl Object3D {
 
     fn layer_setting(&self) -> Option<i32> {
         None
+    }
+
+    fn bounds_setting(&self) -> Option<[f32; 4]> {
+        self.bounding_sphere.map(|(center, radius)| [center.x, center.y, center.z, radius])
     }
 }

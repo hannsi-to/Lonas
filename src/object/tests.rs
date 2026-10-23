@@ -53,6 +53,7 @@ fn new_triangle(gpu: &GpuContext, update: MemoryUpdateType) -> Object2D {
     object
 }
 
+// Write の要求の（位置、バイト数）。位置は要素の数
 fn writes(manager: &DrawManager2D, space: SpaceKind) -> Vec<(u64, u64)> {
     manager
         .core
@@ -68,9 +69,9 @@ fn writes(manager: &DrawManager2D, space: SpaceKind) -> Vec<(u64, u64)> {
 // GPU 上のヒープから、その Object の頂点の領域を読み戻す
 fn read_vertices(gpu: &GpuContext, heap: &Heap, object: &Object2D, layout: VertexLayout) -> Vec<u8> {
     let [vertex, ..] = object.core.handles().expect("領域が確保されていません");
-    let size = (object.core.vertices().len() * layout.stride()) as u64;
+    let kind = SpaceKind::Vertex(layout);
 
-    heap.read(gpu.device(), gpu.queue(), SpaceKind::Vertex, heap.offset(SpaceKind::Vertex, vertex), size)
+    heap.read(gpu.device(), gpu.queue(), kind, heap.offset(kind, vertex), object.core.vertices().len() as u64)
 }
 
 fn expected_vertices(object: &Object2D, layout: VertexLayout) -> Vec<u8> {
@@ -100,13 +101,14 @@ fn only_changed_vertices_are_written() {
     let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), VertexLayout::PositionColor);
     let mut object = new_triangle(&gpu, MemoryUpdateType::Dynamic);
     let stride = VertexLayout::PositionColor.stride() as u64;
+    let vertices = SpaceKind::Vertex(VertexLayout::PositionColor);
 
     // 初回はすべてを転送する
     gpu.begin_frame();
     object.begin();
     triangle(&mut object, 0.0);
     object.end(&mut manager);
-    assert_eq!(writes(&manager, SpaceKind::Vertex), vec![(0, 3 * stride)]);
+    assert_eq!(writes(&manager, vertices), vec![(0, 3 * stride)]);
     assert_eq!(writes(&manager, SpaceKind::Index).len(), 1);
     end_frame(&mut gpu, &mut resources, &mut manager);
 
@@ -126,7 +128,7 @@ fn only_changed_vertices_are_written() {
     object.vertex_color(5.0, 0.0, 0.0, 1.0, 0.0, 1.0);
     object.vertex_color(0.0, 1.0, 0.0, 0.0, 1.0, 1.0);
     object.end(&mut manager);
-    assert_eq!(writes(&manager, SpaceKind::Vertex), vec![(stride, stride)]);
+    assert_eq!(writes(&manager, vertices), vec![(1, stride)]);
     // TriangleList は頂点数が変わらなければインデックスを作り直さない
     assert!(writes(&manager, SpaceKind::Index).is_empty());
     end_frame(&mut gpu, &mut resources, &mut manager);
@@ -264,8 +266,7 @@ fn staging_chunks_are_reused() {
     let (active, free, in_flight) = manager.core.staging.chunk_counts();
     assert_eq!(active + free + in_flight, 1);
 
-    // 待たない場合は、CPU が GPU より先に進んだフレームの数だけチャンクが要る。それでも増え続けはしない
-    // （ウィンドウなしでは present で待たないため、画面に出す場合より多めになる。300 フレームで 8 つ程度）
+    // 待たない場合は、CPU が GPU より先に進んだフレームの数だけチャンクが要る（GPU の混み具合で変わる）
     for frame in 0..300 {
         gpu.begin_frame();
         object.begin();
@@ -274,8 +275,22 @@ fn staging_chunks_are_reused() {
         end_frame(&mut gpu, &mut resources, &mut manager);
     }
 
+    // GPU が追いついた後は、新しいチャンクを作らずに使い回す（増え続けない）
+    let _ = gpu.device().poll(wgpu::PollType::wait_indefinitely());
     let (active, free, in_flight) = manager.core.staging.chunk_counts();
-    assert!(active + free + in_flight <= 16, "チャンクが増え続けています（{}）", active + free + in_flight);
+    let total = active + free + in_flight;
+
+    for frame in 0..50 {
+        gpu.begin_frame();
+        object.begin();
+        triangle(&mut object, frame as f32);
+        object.end(&mut manager);
+        end_frame(&mut gpu, &mut resources, &mut manager);
+        let _ = gpu.device().poll(wgpu::PollType::wait_indefinitely());
+    }
+
+    let (active, free, in_flight) = manager.core.staging.chunk_counts();
+    assert_eq!(active + free + in_flight, total, "GPU が追いついた後にチャンクが増えました");
 }
 
 #[test]
