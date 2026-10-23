@@ -1,9 +1,10 @@
 // 三角形化：index() を呼ばない Object* のインデックスを作る（§10 三角形化：topology）
-// GPU に送るプリミティブは常に三角形。インデックスの作り方だけを選ぶ
+// GPU に送るプリミティブは常に三角形。Stroke 以外はインデックスの作り方だけを選ぶ。Stroke は頂点も作る（stroke.rs）
 
 use crate::math::{Vector2f, Vector3f};
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+// Stroke が f32 を持つため Eq / Hash は実装しない
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Topology {
     // 3 つずつで 1 つの三角形
     TriangleList,
@@ -13,6 +14,76 @@ pub enum Topology {
     TriangleStrip,
     // へこみのある多角形の外周（単調多角形分割）
     Polygon,
+    // 頂点を線の中心として、太さのある線にする（§10 線：Stroke）。xy 平面で広げ、z は頂点ごとの値を保つ
+    Stroke {
+        /// 線の太さ。頂点と同じ単位（ピクセル座標なら px）。
+        line_width: f32,
+        /// 角のつなぎ方。
+        joint_type: JointType,
+        /// `true` なら開いた折れ線、`false` なら閉じた輪郭。
+        strip: bool,
+        /// `Some` なら破線にする。`None` なら実線。
+        dash: Option<Dash>,
+    },
+}
+
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum JointType {
+    /// 何も足さない。角の外側に隙間が空く。いちばん軽い。
+    None,
+    /// 外側の辺を延長して尖らせる。角が鋭すぎるときは
+    /// [`JointType::Bevel`] に落ちる。
+    #[default]
+    Miter,
+    /// 外側の角を三角形 1 枚で塞ぐ。
+    Bevel,
+    /// 外側の角を扇形で丸める。
+    Round,
+    /// 丸い角 + 始点を丸く閉じる。
+    RoundStart,
+    /// 丸い角 + 終点を丸く閉じる。
+    RoundEnd,
+    /// 丸い角 + 両端を丸く閉じる。
+    RoundStartEnd,
+}
+
+impl JointType {
+    // 始点・終点を丸く閉じるか。閉じた輪郭（strip: false）には端がないため使わない
+    pub(crate) fn round_caps(self) -> (bool, bool) {
+        match self {
+            JointType::RoundStart => (true, false),
+            JointType::RoundEnd => (false, true),
+            JointType::RoundStartEnd => (true, true),
+            _ => (false, false),
+        }
+    }
+}
+
+/// 破線の模様。長さはすべて頂点と同じ単位。
+/// 破線の 1 本 1 本を短い線として扱うため、[`JointType::RoundStart`] などの端の丸めは各破線の端に付く。
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Dash {
+    /// 線を描く部分の長さ。0 より大きいこと。
+    pub length: f32,
+    /// 描かない部分の長さ。0 より大きいこと。
+    pub gap: f32,
+    /// 模様をずらす量。線の始点では、模様の先頭から `offset` だけ進んだ位置から始まる。負の値も使える。
+    pub offset: f32,
+}
+
+impl Topology {
+    // 値の検査。不正なら panic（§3 設定の値の検査）
+    pub(crate) fn validate(&self) {
+        let Topology::Stroke { line_width, dash, .. } = *self else { return };
+
+        assert!(line_width.is_finite() && line_width > 0.0, "Stroke の line_width は 0 より大きい有限の値にしてください（{line_width}）");
+
+        if let Some(Dash { length, gap, offset }) = dash {
+            assert!(length.is_finite() && length > 0.0, "Dash の length は 0 より大きい有限の値にしてください（{length}）");
+            assert!(gap.is_finite() && gap > 0.0, "Dash の gap は 0 より大きい有限の値にしてください（{gap}）");
+            assert!(offset.is_finite(), "Dash の offset は有限の値にしてください（{offset}）");
+        }
+    }
 }
 
 // 生成したインデックスと、頂点数が分け方に合わなかったか
@@ -52,6 +123,7 @@ pub(crate) fn generate(topology: Topology, positions: &[Vector3f], winding: Wind
             has_leftover: false,
         },
         Topology::Polygon => Generated { indices: triangulate_polygon(positions, winding), has_leftover: false },
+        Topology::Stroke { .. } => unreachable!("Stroke は頂点も作るため stroke::tessellate で三角形化する"),
     }
 }
 

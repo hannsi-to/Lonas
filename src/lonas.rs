@@ -11,7 +11,7 @@ pub use crate::gpu::{DrawManager, GpuContext, SurfaceDraw, SurfaceId};
 pub use crate::instance::{Instance2D, Instance3D, Visibility};
 pub use crate::math::{Matrix4f, Quaternion, Vector2f, Vector3f, Vector4f};
 pub use crate::memory::MemoryUpdateType;
-pub use crate::object::{InstanceId, Object2D, Object3D, Topology};
+pub use crate::object::{Dash, InstanceId, JointType, Object2D, Object3D, Topology};
 pub use crate::resource::{ResourceManager, ShaderId, TextureId};
 pub use crate::vertex::VertexLayout;
 pub use crate::wgsl;
