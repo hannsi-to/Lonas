@@ -1,6 +1,7 @@
 pub mod color;
 pub mod config;
 pub mod error;
+pub mod gpu;
 pub mod instance;
 pub mod lonas;
 pub mod math;

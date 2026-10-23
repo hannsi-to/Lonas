@@ -185,7 +185,7 @@ rock.end(&mut dm3d);  // そのフレームで begin していなければ panic
 `LonasConfig` / `MemoryConfig` / `MemoryCapacity` はいずれも `Default` を実装せず、既定値を埋めるコンストラクタも用意しない（構造体リテラルで全項目を書く）。
 アプリごとに適切な値が大きく異なり、ライブラリ側で妥当な既定値を決められないため。
 
-`GpuContext::new(window, config)` で受け取る（§9）。
+`GpuContext::new(window, width, height, config)` で受け取る（§9）。
 
 ```rust
 pub struct LonasConfig {
@@ -779,8 +779,7 @@ impl GpuContext {
   - 視界の外を省く処理と奥行きの並べ替えは常に GPU で行う（§10 描画順）。CPU が決めるのは、パイプラインをまたぐ半透明の順番だけ
 - **決定：使う wgpu のバージョンで `MULTI_DRAW_INDIRECT` が使えない環境は対象としない。**
   - バッチング（§10）は常に `multi_draw_indexed_indirect` で行い、`Object*` ごとに描画を呼ぶ道は持たない
-  - wgpu のバージョンによって、この機能が `Features` にあるか、`DownlevelFlags` にあるか、wgpu が常に使えるようにしているかが違う。実装時に使うバージョンの表し方に合わせて判定する
-  - 使えないアダプターでは `GpuContext::new` が `Err(UnsupportedAdapter)` を返す
+  - **wgpu 30 では `MULTI_DRAW_INDIRECT` という機能はない。**`multi_draw_indexed_indirect` は `DownlevelFlags::INDIRECT_EXECUTION` があれば使え、使えない環境では wgpu が内部で代わりに処理する。そのため判定は `INDIRECT_EXECUTION` に含まれる（段階 4 で確認）
   - 却下案：インスタンスを頂点バッファ（インスタンス単位）で渡す道を別に用意する（環境ごとにユーザーのシェーダーを書き分ける必要があり、§10 の「シェーダーを 1 つにする」決定と衝突する）
 
 ### ウィンドウとイベントループ
@@ -819,8 +818,19 @@ impl GpuContext {
 impl GpuContext {
     // 最初のサーフェスと設定を受け取り、そのサーフェスの SurfaceId も返す（§11 複数ウィンドウ）
     // 環境に起因するエラーは Result、config の値が不正なら panic（§3）
-    pub fn new(window: impl HasWindowHandle + HasDisplayHandle, config: LonasConfig) -> Result<(Self, SurfaceId), LonasError>;
-    pub fn add_surface(&mut self, window: impl HasWindowHandle + HasDisplayHandle) -> Result<SurfaceId, LonasError>;
+    // window は GpuContext が持ち続けるため、所有権ごと渡す（winit なら Arc<Window>）
+    pub fn new(
+        window: impl HasWindowHandle + HasDisplayHandle + Send + Sync + 'static,
+        width: u32,
+        height: u32,
+        config: LonasConfig,
+    ) -> Result<(Self, SurfaceId), LonasError>;
+    pub fn add_surface(
+        &mut self,
+        window: impl HasWindowHandle + HasDisplayHandle + Send + Sync + 'static,
+        width: u32,
+        height: u32,
+    ) -> Result<SurfaceId, LonasError>;
     pub fn resize(&mut self, surface: SurfaceId, width: u32, height: u32);
     pub fn surface_size(&self, surface: SurfaceId) -> Vector2f; // resize で通知された大きさ（ピクセル）
     pub fn begin_frame(&mut self);
@@ -846,6 +856,9 @@ gpu.end_frame(&mut resource_manager, &mut [
 ]);
 ```
 
+- **決定：`new` / `add_surface` は、ウィンドウの最初の大きさ（ピクセル）を受け取る。**`raw-window-handle` からは大きさが分からず、サーフェスの設定に必要なため。以降の変化は `resize` で知らせる（段階 4 で決定）
+- **決定：ウィンドウは `Send + Sync + 'static` の値として所有権ごと受け取る。**wgpu のサーフェスはウィンドウより長く生きてはならないため、`GpuContext` が持ち続ける（winit なら `Arc<Window>` を複製して渡す）（段階 4 で決定）
+  - OpenGL のバックエンドで、表示（ディスプレイ）の情報が要る環境には未対応。必要になったら `new` で表示の情報も受け取る
 - `DrawManager` は `DrawManager2D` / `DrawManager3D` が実装するトレイト。`end_frame` に 2D / 3D を混ぜて渡すために使う
 - 配列の借用（`'a`）と各 `DrawManager*` の借用（`'b`）の寿命を分ける。同じ寿命にすると、Rust の可変参照の性質（寿命を縮められない）により、`DrawManager*` の借用が必要以上に長く続くことがある
 
@@ -1690,8 +1703,8 @@ impl Object2D {
 #[non_exhaustive]
 pub enum LonasError {
     // 環境
-    AdapterNotFound,
-    UnsupportedAdapter { missing: &'static str }, // 必須の機能がない（§8。VERTEX_STORAGE / COMPUTE_SHADERS / INDIRECT_EXECUTION / INDIRECT_FIRST_INSTANCE / MULTI_DRAW_INDIRECT）
+    AdapterNotFound(wgpu::RequestAdapterError),
+    UnsupportedAdapter { missing: &'static str }, // 必須の機能がない（§8。VERTEX_STORAGE / COMPUTE_SHADERS / INDIRECT_EXECUTION / INDIRECT_FIRST_INSTANCE）
     RequestDevice(wgpu::RequestDeviceError),
     CreateSurface(wgpu::CreateSurfaceError),
     DeviceLost { reason: String },
@@ -1802,7 +1815,7 @@ Color::WHITE   Color::BLACK   Color::TRANSPARENT
 
 **決定：必須の機能が使えるかどうかを、`GpuContext::new` でアダプターから判定する。**機能の有無で描き方を切り替えることはしない。
 
-- 頂点シェーダーでの storage バッファ（`VERTEX_STORAGE`）・Compute Shader（`COMPUTE_SHADERS`）・間接描画（`INDIRECT_EXECUTION`）・`INDIRECT_FIRST_INSTANCE`・`MULTI_DRAW_INDIRECT` は必須。使えなければ `GpuContext::new` が `Err(UnsupportedAdapter)`（§8）
+- 頂点シェーダーでの storage バッファ（`VERTEX_STORAGE`）・Compute Shader（`COMPUTE_SHADERS`）・間接描画（`INDIRECT_EXECUTION`）・`INDIRECT_FIRST_INSTANCE` は必須（`MULTI_DRAW_INDIRECT` は wgpu 30 では `INDIRECT_EXECUTION` に含まれる、§8）。使えなければ `GpuContext::new` が `Err(UnsupportedAdapter)`（§8）
 
 ### 複数ウィンドウ
 
@@ -1811,7 +1824,7 @@ Color::WHITE   Color::BLACK   Color::TRANSPARENT
 **決定：フレームは全体で 1 つとし、`begin_frame` は全体で 1 回、`end_frame` にサーフェスごとの描画をまとめて渡す。**
 
 ```rust
-let (mut gpu, main_surface) = GpuContext::new(window, config)?;
+let (mut gpu, main_surface) = GpuContext::new(window, width, height, config)?;
 let sub_surface: SurfaceId = gpu.add_surface(other_window)?;
 
 gpu.begin_frame();

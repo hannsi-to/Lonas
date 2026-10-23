@@ -104,7 +104,11 @@ pub struct TestApplication {
 }
 
 impl TestApplication {
-    pub fn init(window: impl HasWindowHandle + HasDisplayHandle) -> Result<Self, LonasError> {
+    pub fn init(
+        window: impl HasWindowHandle + HasDisplayHandle + Send + Sync + 'static,
+        width: u32,
+        height: u32,
+    ) -> Result<Self, LonasError> {
         // LonasConfig は既定値を持たないため、すべての項目を書く（§3）
         let config = LonasConfig {
             redundant_call_warning: true,
@@ -160,7 +164,7 @@ impl TestApplication {
         };
 
         // 環境に起因するエラーは Result（§11 エラーの方針）
-        let (mut gpu, main_surface) = GpuContext::new(window, config)?;
+        let (mut gpu, main_surface) = GpuContext::new(window, width, height, config)?;
 
         // シェーダー・テクスチャの登録は GPU に触れない。反映は end_frame（§11 ResourceManager）
         let mut resource_manager = ResourceManager::new();

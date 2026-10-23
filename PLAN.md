@@ -115,14 +115,14 @@ src/
 **目的**：wgpu を初期化し、何も描かないフレームを正しく回す（§8・§9）。
 
 - [x] **最初に wgpu のバージョンを決める。**（段階 3 で naga のバージョンを揃えるために 30 系に決定。gueiz と同じ）そのバージョンでの `MULTI_DRAW_INDIRECT` と `INDIRECT_FIRST_INSTANCE` の表し方（`Features` / `DownlevelFlags`）を確認する（§8）
-- [ ] `LonasConfig` の値の検査（§3・§11 の各「値の検査」）。不正なら panic、アダプターの上限を超えるなら `Err`
-- [ ] 必須の機能の判定：`VERTEX_STORAGE`・`COMPUTE_SHADERS`・`INDIRECT_EXECUTION`・`INDIRECT_FIRST_INSTANCE`・`MULTI_DRAW_INDIRECT`（§11 環境の判定）
-- [ ] `GpuContext::new` / `add_surface`：sRGB のフォーマットを選ぶ（§11 サーフェスのフォーマット）、Present mode を選ぶ（§8）
-- [ ] `resize`・`surface_size`・`set_present_mode`・`set_anti_aliasing`（反映は次の `begin_frame`）
-- [ ] フレーム番号の `Arc<AtomicU64>`（フレーム中かどうかを含む）と、`begin_frame` / `end_frame` の誤用の panic（§9）
-- [ ] `end_frame` の骨組み：§9 の 8 段階の順に関数を並べ、この段階では「描画先の取得 → クリア → present」だけを行う
-- [ ] 幅か高さが 0、または描画先を取得できない場合に、そのサーフェスだけ飛ばす（§9 リサイズとフレームスキップ）
-- [ ] 同じサーフェスを 2 回渡したら panic（§11 複数ウィンドウ）
+- [x] `LonasConfig` の値の検査（§3・§11 の各「値の検査」）。不正なら panic、アダプターの上限を超えるなら `Err`
+- [x] 必須の機能の判定：`VERTEX_STORAGE`・`COMPUTE_SHADERS`・`INDIRECT_EXECUTION`・`INDIRECT_FIRST_INSTANCE`・`MULTI_DRAW_INDIRECT`（§11 環境の判定）
+- [x] `GpuContext::new` / `add_surface`：sRGB のフォーマットを選ぶ（§11 サーフェスのフォーマット）、Present mode を選ぶ（§8）
+- [x] `resize`・`surface_size`・`set_present_mode`・`set_anti_aliasing`（反映は次の `begin_frame`）
+- [x] フレーム番号の `Arc<AtomicU64>`（フレーム中かどうかを含む）と、`begin_frame` / `end_frame` の誤用の panic（§9）
+- [x] `end_frame` の骨組み：§9 の 8 段階の順に関数を並べ、この段階では「描画先の取得 → クリア → present」だけを行う
+- [x] 幅か高さが 0、または描画先を取得できない場合に、そのサーフェスだけ飛ばす（§9 リサイズとフレームスキップ）
+- [x] 同じサーフェスを 2 回渡したら panic（§11 複数ウィンドウ）
 
 **終わりの条件**
 - ウィンドウなしの `GpuContext` で `begin_frame` / `end_frame` を繰り返せるテスト。今の `src/lonas.rs` のフレーム境界のテストをここへ移す

@@ -386,21 +386,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "二重")]
-    fn begin_frame_twice_panics() {
-        let mut gpu = GpuContext::new();
-        gpu.begin_frame();
-        gpu.begin_frame();
-    }
-
-    #[test]
-    #[should_panic(expected = "end_frame が呼ばれました")]
-    fn end_frame_without_begin_panics() {
-        let mut gpu = GpuContext::new();
-        gpu.end_frame(&mut []);
-    }
-
-    #[test]
     #[should_panic(expected = "フレーム外")]
     fn end_outside_frame_panics() {
         let mut gpu = GpuContext::new();
