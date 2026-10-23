@@ -181,6 +181,58 @@ fn stroke_draws_dashes() {
     }
 }
 
+// ---- 穴のある多角形（§10）----
+
+// 16〜48 の白い正方形に、28〜36 の正方形の穴を空けて描く。cull_mode は既定（Back）
+fn draw_with_hole(scene: &mut Scene, topology: Topology) -> Vec<[u8; 4]> {
+    let mut manager = manager_2d(scene);
+    let mut object = Object2D::new(&scene.gpu);
+    object.memory_update_type(MemoryUpdateType::Dynamic).topology(topology).shader(scene.shader);
+    object.add_instance(Instance2D::default());
+
+    scene.gpu.begin_frame();
+    object.begin();
+    for (x, y) in [(16.0, 16.0), (48.0, 16.0), (48.0, 48.0), (16.0, 48.0)] {
+        object.vertex(Vertex::new_position_color(x, y, 0.0, 1.0, 1.0, 1.0, 1.0));
+    }
+    object.begin_hole();
+    for (x, y) in [(28.0, 28.0), (36.0, 28.0), (36.0, 36.0), (28.0, 36.0)] {
+        object.vertex(Vertex::new_position_color(x, y, 0.0, 1.0, 1.0, 1.0, 1.0));
+    }
+    object.end(&mut manager);
+    scene.gpu.end_frame(&mut scene.resources, &mut [SurfaceDraw {
+        surface: scene.surface,
+        clear_color: Some(Color::BLACK),
+        draw_managers: &mut [&mut manager],
+    }])
+    .unwrap();
+
+    scene.gpu.read_pixels(scene.surface)
+}
+
+#[test]
+fn polygon_hole_is_not_filled() {
+    let Some(mut scene) = scene(SHADER_2D) else { return };
+    let pixels = draw_with_hole(&mut scene, Topology::Polygon);
+
+    assert_color(pixel(&pixels, 20, 20), [255, 255, 255], "穴の外");
+    assert_color(pixel(&pixels, 44, 40), [255, 255, 255], "穴の外");
+    assert_color(pixel(&pixels, 32, 32), [0, 0, 0], "穴の中");
+    assert_color(pixel(&pixels, 8, 8), [0, 0, 0], "外周の外");
+}
+
+#[test]
+fn stroke_outlines_holes() {
+    let Some(mut scene) = scene(SHADER_2D) else { return };
+    let stroke = Topology::Stroke { line_width: 2.0, joint_type: JointType::Miter, strip: false, dash: None };
+    let pixels = draw_with_hole(&mut scene, stroke);
+
+    assert_color(pixel(&pixels, 16, 32), [255, 255, 255], "外周の線");
+    assert_color(pixel(&pixels, 28, 32), [255, 255, 255], "穴の線");
+    assert_color(pixel(&pixels, 22, 32), [0, 0, 0], "外周と穴の間");
+    assert_color(pixel(&pixels, 32, 32), [0, 0, 0], "穴の中");
+}
+
 fn manager_2d(scene: &mut Scene) -> DrawManager2D {
     DrawManager2D::new(&mut scene.gpu, Camera2D { position: Vector2f::ZERO, rotation: 0.0, zoom: 1.0 }, VertexLayout::PositionColor)
 }

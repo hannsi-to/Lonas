@@ -4,7 +4,7 @@
 
 use std::f32::consts::PI;
 
-use super::topology::{Dash, JointType};
+use super::topology::{self, Dash, JointType};
 use crate::math::Vector2f;
 use crate::vertex::Vertex;
 
@@ -21,23 +21,12 @@ pub(crate) struct Mesh {
     pub indices: Vec<u32>,
 }
 
-pub(crate) fn tessellate(points: &[Vertex], line_width: f32, joint: JointType, strip: bool, dash: Option<Dash>) -> Mesh {
-    let points = dedup(points, !strip);
-    // 頂点が 2 個の閉じた輪郭は、1 本の線分として描く
-    let closed = !strip && points.len() >= 3;
+// holes は穴の最初の頂点の位置（§10 穴のある多角形）。外周と穴の輪郭を、それぞれ別の線として描く
+pub(crate) fn tessellate(points: &[Vertex], holes: &[usize], line_width: f32, joint: JointType, strip: bool, dash: Option<Dash>) -> Mesh {
     let mut builder = Builder { mesh: Mesh::default(), half: line_width * 0.5, joint };
 
-    if points.len() < 2 {
-        return builder.mesh;
-    }
-
-    match dash {
-        None => builder.polyline(&points, closed, !closed),
-        Some(dash) => {
-            for piece in dash_pieces(&points, closed, dash) {
-                builder.polyline(&dedup(&piece, false), false, true);
-            }
-        }
+    for ring in topology::rings(points.len(), holes) {
+        builder.ring(&points[ring], strip, dash);
     }
 
     builder.mesh
@@ -50,6 +39,26 @@ struct Builder {
 }
 
 impl Builder {
+    // 1 つの輪（外周か穴）を、開いた折れ線か閉じた輪郭として描く
+    fn ring(&mut self, points: &[Vertex], strip: bool, dash: Option<Dash>) {
+        let points = dedup(points, !strip);
+        // 頂点が 2 個の閉じた輪郭は、1 本の線分として描く
+        let closed = !strip && points.len() >= 3;
+
+        if points.len() < 2 {
+            return;
+        }
+
+        match dash {
+            None => self.polyline(&points, closed, !closed),
+            Some(dash) => {
+                for piece in dash_pieces(&points, closed, dash) {
+                    self.polyline(&dedup(&piece, false), false, true);
+                }
+            }
+        }
+    }
+
     // caps が true なら、JointType に応じて両端を丸める
     fn polyline(&mut self, points: &[Vertex], closed: bool, caps: bool) {
         let count = points.len();
@@ -313,7 +322,7 @@ mod tests {
     }
 
     fn solid(xy: &[(f32, f32)], width: f32, joint: JointType, strip: bool) -> Mesh {
-        tessellate(&points(xy), width, joint, strip, None)
+        tessellate(&points(xy), &[], width, joint, strip, None)
     }
 
     fn triangles(mesh: &Mesh) -> Vec<[Vector2f; 3]> {
@@ -357,7 +366,7 @@ mod tests {
         for joint in ALL_JOINTS {
             for strip in [true, false] {
                 for dash in [None, Some(Dash { length: 3.0, gap: 1.5, offset: 0.7 })] {
-                    let mesh = tessellate(&points(&zigzag), 2.0, joint, strip, dash);
+                    let mesh = tessellate(&points(&zigzag), &[], 2.0, joint, strip, dash);
 
                     assert!(!mesh.indices.is_empty());
                     assert!(mesh.indices.iter().all(|&i| (i as usize) < mesh.vertices.len()));
@@ -501,6 +510,25 @@ mod tests {
         let square = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
         let repeated = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0), (0.0, 0.0)];
         assert_eq!(solid(&square, 2.0, JointType::Miter, false).indices, solid(&repeated, 2.0, JointType::Miter, false).indices);
+    }
+
+    #[test]
+    fn holes_are_outlined_as_separate_rings() {
+        // 外周 0〜10 の正方形と、穴 4〜6 の正方形
+        let rings = points(&[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0), (4.0, 4.0), (6.0, 4.0), (6.0, 6.0), (4.0, 6.0)]);
+        let closed = tessellate(&rings, &[4], 1.0, JointType::Miter, false, None);
+        let open = tessellate(&rings, &[4], 1.0, JointType::Miter, true, None);
+
+        // 閉じた輪郭は、どちらの輪も 4 辺と 4 つの角（三角形 16 個ずつ）。外周と穴の間をつなぐ線はない
+        assert_eq!(closed.indices.len() / 3, 16 * 2);
+        for (x, y) in [(10.5, 10.5), (-0.5, -0.5), (6.5, 6.5), (3.5, 3.5)] {
+            assert!(has_vertex_near(&closed, Vector2f::new(x, y)), "({x}, {y}) がありません");
+        }
+        assert!(!closed.vertices.iter().any(|v| (v.x - 7.0).abs() < 1e-4 || (v.y - 7.0).abs() < 1e-4));
+        // 開いた折れ線は、輪ごとに 3 辺と内側の 2 つの角
+        assert_eq!(open.indices.len() / 3, (3 * 2 + 2 * 2) * 2);
+        // 空の穴は何も描かない
+        assert_eq!(tessellate(&rings, &[4, 8], 1.0, JointType::Miter, false, None).indices, closed.indices);
     }
 
     #[test]

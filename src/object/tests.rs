@@ -377,6 +377,48 @@ fn staging_chunks_are_reused() {
     assert_eq!(active + free + in_flight, total, "GPU が追いついた後にチャンクが増えました");
 }
 
+// 穴の区切りが変われば、頂点が同じでもインデックスを作り直す（§10 穴のある多角形）
+#[test]
+fn polygon_indices_follow_hole_boundaries() {
+    let Some(mut gpu) = headless(sample_config()) else { return };
+    let mut resources = ResourceManager::new();
+    let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), VertexLayout::Position);
+    let mut object = Object2D::new(&gpu);
+    object.memory_update_type(MemoryUpdateType::Dynamic).topology(Topology::Polygon);
+    object.add_instance(Instance2D::default());
+
+    // 外周 0〜10 の正方形と、穴 4〜6 の正方形。hole_start 個目の頂点から穴にする
+    let corners = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0), (4.0, 4.0), (6.0, 4.0), (6.0, 6.0), (4.0, 6.0)];
+    let draw = |gpu: &mut GpuContext, object: &mut Object2D, manager: &mut DrawManager2D, hole_start: usize| {
+        gpu.begin_frame();
+        object.begin();
+        for (i, &(x, y)) in corners.iter().enumerate() {
+            if i == hole_start {
+                object.begin_hole();
+            }
+            object.vertex(Vertex::new_position(x, y, 0.0));
+        }
+        object.end(manager);
+    };
+
+    draw(&mut gpu, &mut object, &mut manager, 4);
+    // 頂点 8 個・穴 1 つなら三角形は 8 + 2 - 2 = 8 個
+    assert_eq!(object.core.index_values().len(), 8 * 3);
+    end_frame(&mut gpu, &mut resources, &mut manager);
+
+    draw(&mut gpu, &mut object, &mut manager, 4);
+    assert!(manager.core.heap_requests.is_empty());
+    end_frame(&mut gpu, &mut resources, &mut manager);
+
+    // (4, 4) を外周に移す（外周 5 点のへこんだ形と、三角形の穴）。頂点は同じでもインデックスを作り直す
+    let before = object.core.index_values().to_vec();
+    draw(&mut gpu, &mut object, &mut manager, 5);
+    assert!(!writes(&manager, SpaceKind::Index).is_empty());
+    assert_ne!(object.core.index_values(), before);
+    assert!(writes(&manager, SpaceKind::Vertex(VertexLayout::Position)).is_empty());
+    end_frame(&mut gpu, &mut resources, &mut manager);
+}
+
 // Stroke は作った頂点を送り、変わった位置だけを送り直す。Stroke をやめたら元の頂点をすべて送り直す（§10 線：Stroke）
 #[test]
 fn stroke_uploads_generated_vertices_and_switches_back() {
