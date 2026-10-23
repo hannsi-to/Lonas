@@ -8,7 +8,7 @@ mod common;
 
 use lonas::lonas::{
     AntiAliasing, Camera3D, Color, CullMode, DrawManager3D, GpuContext, Instance3D, InstanceId, Matrix4f, MemoryUpdateType,
-    Object3D, ProjectionMode, Quaternion, ResourceManager, SurfaceDraw, SurfaceId, Topology, Vector3f, VertexLayout, wgsl,
+    Object3D, ProjectionMode, Quaternion, ResourceManager, SurfaceDraw, SurfaceId, Topology, Vector3f, Vertex, VertexLayout, wgsl,
 };
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
@@ -119,9 +119,9 @@ impl State {
 
         // 細長い三角形を放射状に並べて回す（輪郭のギザギザが目立つ形）
         self.blades.begin();
-        self.blades.vertex_color(0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0);
-        self.blades.vertex_color(1.6, 0.03, 0.0, 1.0, 0.8, 0.3, 1.0);
-        self.blades.vertex_color(1.6, -0.03, 0.0, 0.3, 0.8, 1.0, 1.0);
+        self.blades.vertex(Vertex::new_position_color(0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0));
+        self.blades.vertex(Vertex::new_position_color(1.6, 0.03, 0.0, 1.0, 0.8, 0.3, 1.0));
+        self.blades.vertex(Vertex::new_position_color(1.6, -0.03, 0.0, 0.3, 0.8, 1.0, 1.0));
 
         for (i, &id) in self.blade_ids.iter().enumerate() {
             let angle = self.time * 0.3 + i as f32 * std::f32::consts::TAU / self.blade_ids.len() as f32;

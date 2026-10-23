@@ -8,7 +8,7 @@ mod common;
 use lonas::lonas::{
     Camera2D, Camera3D, Color, CullMode, DrawManager2D, DrawManager3D, GpuContext, Instance2D, Instance3D, InstanceId,
     Matrix4f, MemoryUpdateType, Object2D, Object3D, ProjectionMode, Quaternion, ResourceManager, SurfaceDraw, SurfaceId,
-    Topology, Vector2f, Vector3f, VertexLayout, wgsl,
+    Topology, Vector2f, Vector3f, Vertex, VertexLayout, wgsl,
 };
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -149,9 +149,9 @@ impl State {
 
         // 3D：頂点は毎フレーム同じ値を書く（変わらなければ転送しない）。回転はインスタンスで
         self.triangle_3d.begin();
-        self.triangle_3d.vertex_color(-1.0, -0.8, 0.0, 1.0, 0.0, 0.0, 1.0);
-        self.triangle_3d.vertex_color(1.0, -0.8, 0.0, 0.0, 1.0, 0.0, 1.0);
-        self.triangle_3d.vertex_color(0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0);
+        self.triangle_3d.vertex(Vertex::new_position_color(-1.0, -0.8, 0.0, 1.0, 0.0, 0.0, 1.0));
+        self.triangle_3d.vertex(Vertex::new_position_color(1.0, -0.8, 0.0, 0.0, 1.0, 0.0, 1.0));
+        self.triangle_3d.vertex(Vertex::new_position_color(0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0));
         self.triangle_3d.update_instance(self.instance_3d, Instance3D {
             transform: Matrix4f::from_rotation(Quaternion::from_axis_angle(Vector3f::Y, self.time)),
             ..Instance3D::default()
@@ -160,9 +160,9 @@ impl State {
 
         // 2D：インスタンスを回す
         self.triangle_2d.begin();
-        self.triangle_2d.vertex_color(-15.0, 12.0, 1.0, 1.0, 1.0, 1.0);
-        self.triangle_2d.vertex_color(15.0, 12.0, 1.0, 1.0, 1.0, 1.0);
-        self.triangle_2d.vertex_color(0.0, -15.0, 1.0, 1.0, 1.0, 1.0);
+        self.triangle_2d.vertex(Vertex::new_position_color(-15.0, 12.0, 0.0, 1.0, 1.0, 1.0, 1.0));
+        self.triangle_2d.vertex(Vertex::new_position_color(15.0, 12.0, 0.0, 1.0, 1.0, 1.0, 1.0));
+        self.triangle_2d.vertex(Vertex::new_position_color(0.0, -15.0, 0.0, 1.0, 1.0, 1.0, 1.0));
 
         for (i, &id) in self.instances_2d.iter().enumerate() {
             self.triangle_2d.update_instance(id, Instance2D {

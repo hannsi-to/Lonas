@@ -34,9 +34,9 @@ object.add_instance(Instance2D::default());
 gpu.begin_frame();
 
 object.begin();
-object.vertex(0.0, 0.0);
-object.vertex(100.0, 0.0);
-object.vertex(0.0, 100.0);
+object.vertex(Vertex::new_position_color(0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0));
+object.vertex(Vertex::new_position_color(100.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0));
+object.vertex(Vertex::new_position_color(0.0, 100.0, 0.0, 1.0, 1.0, 1.0, 1.0));
 object.end(&mut draw_manager);
 
 gpu.end_frame(&mut resources, &mut [

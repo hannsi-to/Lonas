@@ -6,7 +6,7 @@ use super::*;
 use crate::config::LonasConfig;
 use crate::config::tests::sample_config;
 use crate::draw::{Camera2D, Camera3D, HeapRequest, SpaceKind};
-use crate::vertex::VertexLayout;
+use crate::vertex::{Vertex, VertexLayout};
 use crate::gpu::{SurfaceDraw, SurfaceId, heap::Heap};
 use crate::math::Quaternion;
 use crate::resource::ResourceManager;
@@ -51,9 +51,9 @@ fn end_frame(gpu: &mut GpuContext, resources: &mut ResourceManager, manager: &mu
 }
 
 fn triangle(object: &mut Object2D, x: f32) {
-    object.vertex_color(x, 0.0, 1.0, 0.0, 0.0, 1.0);
-    object.vertex_color(x + 1.0, 0.0, 0.0, 1.0, 0.0, 1.0);
-    object.vertex_color(x, 1.0, 0.0, 0.0, 1.0, 1.0);
+    object.vertex(Vertex::new_position_color(x, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0));
+    object.vertex(Vertex::new_position_color(x + 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0));
+    object.vertex(Vertex::new_position_color(x, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0));
 }
 
 fn new_triangle(gpu: &GpuContext, update: MemoryUpdateType) -> Object2D {
@@ -104,6 +104,28 @@ fn panic_message(f: impl FnOnce()) -> String {
         .unwrap_or_default()
 }
 
+// Vertex をそのまま受け取り、2D でも z は渡したとおりに使う（§1 頂点の入力）
+#[test]
+fn vertex_struct_is_stored_as_given() {
+    let Some(mut gpu) = headless(sample_config()) else { return };
+    let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), VertexLayout::PositionColorUv);
+    let mut object = new_triangle(&gpu, MemoryUpdateType::Dynamic);
+    let vertices = [
+        Vertex { x: 1.0, y: 2.0, z: 0.5, r: 1.0, a: 1.0, u: 0.25, ..Default::default() },
+        Vertex::new_position_color_uv(3.0, 4.0, -0.5, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0),
+        Vertex { x: 5.0, y: 6.0, a: 1.0, ..Default::default() },
+    ];
+
+    gpu.begin_frame();
+    object.begin();
+    for vertex in vertices {
+        object.vertex(vertex);
+    }
+    object.end(&mut manager);
+
+    assert_eq!(object.core.vertices(), vertices);
+}
+
 #[test]
 fn only_changed_vertices_are_written() {
     let Some(mut gpu) = headless(sample_config()) else { return };
@@ -134,9 +156,9 @@ fn only_changed_vertices_are_written() {
     // 2 番目の頂点だけ変えると、その範囲だけ転送する
     gpu.begin_frame();
     object.begin();
-    object.vertex_color(0.0, 0.0, 1.0, 0.0, 0.0, 1.0);
-    object.vertex_color(5.0, 0.0, 0.0, 1.0, 0.0, 1.0);
-    object.vertex_color(0.0, 1.0, 0.0, 0.0, 1.0, 1.0);
+    object.vertex(Vertex::new_position_color(0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0));
+    object.vertex(Vertex::new_position_color(5.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0));
+    object.vertex(Vertex::new_position_color(0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0));
     object.end(&mut manager);
     assert_eq!(writes(&manager, vertices), vec![(1, stride)]);
     // TriangleList は頂点数が変わらなければインデックスを作り直さない
@@ -176,7 +198,7 @@ fn heap_contents_match_cpu_copy_after_growth_and_compaction() {
         // Dynamic の頂点数を毎フレーム増やし、確保し直しと拡張を起こす
         dynamic.begin();
         for i in 0..(3 + frame * 6) {
-            dynamic.vertex_color(i as f32, frame as f32, 0.5, 0.5, 0.5, 1.0);
+            dynamic.vertex(Vertex::new_position_color(i as f32, frame as f32, 0.0, 0.5, 0.5, 0.5, 1.0));
         }
         dynamic.end(&mut manager);
 
@@ -289,7 +311,7 @@ fn indices_come_from_topology_or_index_calls() {
     gpu.begin_frame();
     object.begin();
     for (x, y) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] {
-        object.vertex(x, y);
+        object.vertex(Vertex::new_position(x, y, 0.0));
     }
     object.end(&mut manager);
     assert_eq!(object.core.index_values(), [0, 1, 2, 0, 2, 3]);
@@ -299,7 +321,7 @@ fn indices_come_from_topology_or_index_calls() {
     gpu.begin_frame();
     object.begin();
     for (x, y) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)] {
-        object.vertex(x, y);
+        object.vertex(Vertex::new_position(x, y, 0.0));
     }
     object.index(3).index(2).index(1);
     object.end(&mut manager);
@@ -373,9 +395,9 @@ fn stroke_uploads_generated_vertices_and_switches_back() {
     let draw = |gpu: &mut GpuContext, object: &mut Object2D, manager: &mut DrawManager2D, last_red: f32| {
         gpu.begin_frame();
         object.begin();
-        object.vertex_color(0.0, 0.0, 1.0, 1.0, 1.0, 1.0);
-        object.vertex_color(10.0, 0.0, 1.0, 1.0, 1.0, 1.0);
-        object.vertex_color(10.0, 10.0, last_red, 1.0, 1.0, 1.0);
+        object.vertex(Vertex::new_position_color(0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0));
+        object.vertex(Vertex::new_position_color(10.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0));
+        object.vertex(Vertex::new_position_color(10.0, 10.0, 0.0, last_red, 1.0, 1.0, 1.0));
         object.end(manager);
     };
     let read_back = |gpu: &GpuContext, object: &Object2D| {
@@ -486,7 +508,7 @@ fn misuse_panics() {
     // index も topology も呼ばずに end
     let mut object = Object2D::new(&gpu);
     object.memory_update_type(MemoryUpdateType::Dynamic).begin();
-    object.vertex(0.0, 0.0);
+    object.vertex(Vertex::new_position(0.0, 0.0, 0.0));
     assert!(panic_message(|| { object.end(&mut manager); }).contains("index() も topology() も"));
 
     // 別の DrawManager の CameraId
@@ -550,7 +572,7 @@ fn draw_manager_3d_accepts_object_3d() {
     gpu.begin_frame();
     object.begin();
     for (x, z) in [(0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0)] {
-        object.vertex(x, 0.0, z);
+        object.vertex(Vertex::new_position(x, 0.0, z));
     }
     object.end(&mut manager);
     assert_eq!(object.core.index_values().len(), 6);
@@ -562,7 +584,7 @@ fn draw_manager_3d_accepts_object_3d() {
     gpu.begin_frame();
     object.begin();
     for (x, z) in [(0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0)] {
-        object.vertex(x, 0.0, z);
+        object.vertex(Vertex::new_position(x, 0.0, z));
     }
     object.end(&mut manager);
     // インスタンスが 0 個なら描かない

@@ -11,7 +11,7 @@ use crate::math::{Matrix4f, Quaternion, Vector2f, Vector3f};
 use crate::memory::MemoryUpdateType;
 use crate::object::{Dash, JointType, Object2D, Object3D, Topology};
 use crate::resource::{ResourceManager, ShaderId};
-use crate::vertex::VertexLayout;
+use crate::vertex::{Vertex, VertexLayout};
 use crate::wgsl::STRUCTS;
 
 const SIZE: u32 = 64;
@@ -93,7 +93,7 @@ fn assert_color(actual: [u8; 4], expected: [u8; 3], message: &str) {
 // 0〜size の正方形（2D は左上が原点、y が下向き）
 fn square_2d(object: &mut Object2D, size: f32) {
     for (x, y) in [(0.0, 0.0), (size, 0.0), (size, size), (0.0, size)] {
-        object.vertex_color(x, y, 1.0, 1.0, 1.0, 1.0);
+        object.vertex(Vertex::new_position_color(x, y, 0.0, 1.0, 1.0, 1.0, 1.0));
     }
 }
 
@@ -137,8 +137,8 @@ fn draw_stroke(scene: &mut Scene, joint_type: JointType, dash: Option<Dash>) -> 
 
     scene.gpu.begin_frame();
     object.begin();
-    object.vertex_color(8.0, 32.0, 1.0, 1.0, 1.0, 1.0);
-    object.vertex_color(56.0, 32.0, 1.0, 1.0, 1.0, 1.0);
+    object.vertex(Vertex::new_position_color(8.0, 32.0, 0.0, 1.0, 1.0, 1.0, 1.0));
+    object.vertex(Vertex::new_position_color(56.0, 32.0, 0.0, 1.0, 1.0, 1.0, 1.0));
     object.end(&mut manager);
     scene.gpu.end_frame(&mut scene.resources, &mut [SurfaceDraw {
         surface: scene.surface,
@@ -312,7 +312,7 @@ fn draw_3d(scene: &mut Scene, manager: &mut DrawManager3D, objects: &mut [&mut O
     for object in objects.iter_mut() {
         object.begin();
         for (x, y) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
-            object.vertex_color(x, y, 0.0, 1.0, 1.0, 1.0, 1.0);
+            object.vertex(Vertex::new_position_color(x, y, 0.0, 1.0, 1.0, 1.0, 1.0));
         }
         object.end(manager);
     }
@@ -433,7 +433,7 @@ fn draw_textured(scene: &mut Scene, manager: &mut DrawManager2D, objects: &mut [
     for object in objects.iter_mut() {
         object.begin();
         for (x, y, u, v) in [(0.0, 0.0, 0.0, 0.0), (32.0, 0.0, 1.0, 0.0), (32.0, 32.0, 1.0, 1.0), (0.0, 32.0, 0.0, 1.0)] {
-            object.vertex_color_uv(x, y, 1.0, 1.0, 1.0, 1.0, u, v);
+            object.vertex(Vertex::new_position_color_uv(x, y, 0.0, 1.0, 1.0, 1.0, 1.0, u, v));
         }
         object.end(manager);
     }
@@ -600,9 +600,9 @@ use crate::config::AntiAliasing;
 fn partial_pixels(scene: &mut Scene, manager: &mut DrawManager2D, object: &mut Object2D) -> usize {
     scene.gpu.begin_frame();
     object.begin();
-    object.vertex_color(0.0, 0.0, 1.0, 1.0, 1.0, 1.0);
-    object.vertex_color(SIZE as f32, 0.0, 1.0, 1.0, 1.0, 1.0);
-    object.vertex_color(0.0, SIZE as f32 * 0.7, 1.0, 1.0, 1.0, 1.0);
+    object.vertex(Vertex::new_position_color(0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0));
+    object.vertex(Vertex::new_position_color(SIZE as f32, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0));
+    object.vertex(Vertex::new_position_color(0.0, SIZE as f32 * 0.7, 0.0, 1.0, 1.0, 1.0, 1.0));
     object.end(manager);
     scene.gpu.end_frame(&mut scene.resources, &mut [SurfaceDraw {
         surface: scene.surface,

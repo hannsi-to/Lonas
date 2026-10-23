@@ -17,7 +17,7 @@ gueiz の処理が複雑化したため、ユーザー API を先に固めてか
 | `Camera2D` / `Camera3D` | `DrawManager*` が所有し、`CameraId` で参照する（§5・§11） |
 | `ResourceManager` | シェーダーとテクスチャを登録し、`ShaderId` / `TextureId` を返す（§11） |
 | `Instance2D` / `Instance3D` | インスタンスごとの変換・色・表示 / 非表示（§11） |
-| `Vertex` | 内部の頂点表現。位置 / 色 / UV / 法線 (`#[repr(C)]`, `PartialEq`) |
+| `Vertex` | 頂点。位置 / 色 / UV / 法線。`Object*::vertex` に渡す（`#[repr(C)]`, `PartialEq`, `Default`、§1 頂点の入力） |
 
 ### 呼び出し区分
 
@@ -27,9 +27,9 @@ gueiz の処理が複雑化したため、ユーザー API を先に固めてか
 gpu.begin_frame();
 
 object.begin();
-object.vertex(x, 100.0); // Object2D は vertex(x, y)（§11）
-object.vertex(x, 100.0);
-object.vertex(x, 300.0);
+object.vertex(Vertex::new_position(x, 100.0, 0.0)); // §1 頂点の入力
+object.vertex(Vertex::new_position(x, 100.0, 0.0));
+object.vertex(Vertex::new_position(x, 300.0, 0.0));
 object.index(0);
 object.index(1);
 object.index(2);
@@ -59,18 +59,23 @@ let instance_id = object.add_instance(Instance2D { ... }); // InstanceId を返�
 
 ### 頂点の入力
 
-毎フレーム `Vertex` をユーザー側で作成するのはコストが高いため、**頂点の要素を関数の引数として直接受け取る**方式とする。
-`Vertex` はユーザーが組み立てるものではなく、ライブラリ内部の表現として扱う。
+**決定：頂点は `Vertex` 構造体で受け取る。`Object2D` / `Object3D` とも `vertex(Vertex)` の 1 つだけを用意する。**
 
-段階的に省略可能（省略された要素は 0.0）。
+```rust
+impl Object2D { // Object3D も同じ
+    pub fn vertex(&mut self, vertex: Vertex) -> &mut Self;
+}
 
-- `vertex(x, y, z)`
-- `vertex_color(x, y, z, r, g, b, a)`
-- `vertex_color_uv(x, y, z, r, g, b, a, u, v)`
-- `vertex_color_uv_normal(x, y, z, r, g, b, a, u, v, n_x, n_y, n_z)`
+object.vertex(Vertex::new_position_color(x, y, 0.0, r, g, b, a));
+object.vertex(Vertex { x, y, u, v, a: 1.0, ..Default::default() });
+```
 
-この方式の利点として、受け取った値を内部バッファの該当位置と **その場で比較しながら書き込める**。
-収集用バッファと GPU 反映済みバッファを二重に持たなくても変更検出ができる（§4 参照）。
+- 使わない要素は 0.0 にする。`Vertex` の `Default` はすべて 0.0 で、`new_position` / `new_position_color` / `new_position_color_uv` / `new_position_color_uv_normal` も省いた要素を 0.0 にする
+- 2D でも z は渡したとおりに使う（位置は `vec3<f32>` のまま送る、§10 頂点の並び方）
+- 受け取った値を内部バッファの該当位置と **その場で比較しながら書き込む** 点は変わらない。収集用バッファと GPU 反映済みバッファを二重に持たなくても変更検出ができる（§4 参照）
+- 以前の決定（頂点の要素を関数の引数で受け取る `vertex(x, y, z)` / `vertex_color(...)` / `vertex_color_uv(...)` / `vertex_color_uv_normal(...)`、2D は z のない `vertex(x, y)` など）は置き換えた。理由：
+  - 関数が要素の組み合わせと 2D / 3D の分だけ増え、引数が最大 12 個の並びになって読みにくい
+  - 「`Vertex` を毎フレーム作るのはコストが高い」としていたが、`Vertex` は 48 バイトの `Copy` な値で、引数を 12 個渡すのと手間は変わらない
 
 ---
 
@@ -995,9 +1000,9 @@ pub enum Blend {
 
 ```rust
 object.begin();
-object.vertex(0.0, 0.0, 0.0);
-object.vertex(1.0, 0.0, 0.0);
-object.vertex(0.0, 1.0, 0.0);
+object.vertex(Vertex::new_position(0.0, 0.0, 0.0));
+object.vertex(Vertex::new_position(1.0, 0.0, 0.0));
+object.vertex(Vertex::new_position(0.0, 1.0, 0.0));
 object.index(0);
 object.index(1);
 object.index(2);
@@ -1304,7 +1309,8 @@ impl DrawManager2D { // DrawManager3D も同じ（Camera3D を受け取る）
 ```
 
 - GPU へ転送する際に、`VertexLayout` に含まれる要素だけを詰めて書き込む。2D で位置と色だけ使う場合などに GPU メモリを節約できる
-- **決定：`VertexLayout` に含まれない要素を `vertex*` 関数で書いた場合（例：`Position` の `DrawManager*` に `vertex_color` で書いた `Object*`）、余分な要素を捨てて `log` で警告する。**
+- **決定：`VertexLayout` に含まれない要素に 0 以外の値がある `Vertex` を渡した場合（例：`Position` の `DrawManager*` に、色を入れた `Vertex` を渡した `Object*`）、余分な要素を捨てて `log` で警告する。**
+  - 要素を使ったかは値で判断する。その要素のどれかが 0 以外なら使ったとみなす（`VertexLayout` は前から順に要素を足す形のため、後ろの要素に値があれば前の要素も使ったとみなす）
   - 警告は `Object*` ごとに 1 回だけ出す（毎フレーム出さない）
   - 逆に `VertexLayout` の要素が足りない場合は、§1 の頂点の入力と同じく 0.0 で埋める
 - `Object*` の CPU 側は従来どおり `Vertex`（全要素）で持つ
@@ -1785,22 +1791,14 @@ struct Camera {                              // 224 バイト
 | UV | 2 | `Float32x2`（`vec2<f32>`） | `PositionColorUv` 以降 |
 | 法線 | 3 | `Float32x3`（`vec3<f32>`） | `PositionColorUvNormal` |
 
-- 2D の頂点（`vertex(x, y)`、§11 2D の頂点の入力）も位置は `vec3<f32>` で、z は 0
+- 2D の頂点も位置は `vec3<f32>` で、z は `Vertex` に渡した値（§1 頂点の入力）
 - 色は精度のため `f32` のまま送る（8 ビットに詰めると、線形の値では暗い色の階調が失われる）
 
 ### 2D の頂点の入力
 
-**決定：`Object2D` には 2D 用の `vertex(x, y)` を用意する。**
+`Object2D` も `Object3D` と同じ `vertex(Vertex)` で受け取る（§1 頂点の入力）。z も渡したとおりに使う。
 
-```rust
-impl Object2D {
-    pub fn vertex(&mut self, x: f32, y: f32) -> &mut Self;
-    pub fn vertex_color(&mut self, x: f32, y: f32, r: f32, g: f32, b: f32, a: f32) -> &mut Self;
-    pub fn vertex_color_uv(&mut self, x: f32, y: f32, r: f32, g: f32, b: f32, a: f32, u: f32, v: f32) -> &mut Self;
-}
-```
-
-- `Object3D` は従来どおり `vertex(x, y, z)` など
+- 以前の決定（`Object2D` に z のない `vertex(x, y)` / `vertex_color(...)` / `vertex_color_uv(...)` を用意する）は、§1 の `Vertex` で受け取る決定で置き換えた
 
 ### 同値の設定の扱いと redundant_call_warning
 
@@ -1909,7 +1907,7 @@ Color::from_rgba8(255, 128, 0, 255)
 Color::WHITE   Color::BLACK   Color::TRANSPARENT
 ```
 
-- 頂点の色（`vertex_color*`）・インスタンスの `Color`・`clear_color` は、転送するときに線形に変換する
+- 頂点の色（`Vertex` の r / g / b / a）・インスタンスの `Color`・`clear_color` は、転送するときに線形に変換する
 - テクスチャはアトラスが `Rgba8UnormSrgb` のため、サンプルした時点で線形になる（§11 TextureAtlas）
 - サーフェスは常に sRGB のフォーマットのため（§11 サーフェスのフォーマット）、書き込むときに GPU が sRGB に戻す
 - これにより、頂点の色・インスタンスの色・テクスチャの色の扱いがすべて揃う

@@ -1,7 +1,9 @@
 use crate::color::srgb_to_linear;
 
+// 頂点。Object*::vertex に渡す（§1 頂点の入力）。DrawManager* の VertexLayout に含まれない要素は 0.0 のままにする
+// Default はすべて 0.0。Vertex { x, y, ..Default::default() } のように、使う要素だけを書ける
 #[repr(C)]
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct Vertex {
     pub x: f32,
     pub y: f32,

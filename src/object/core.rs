@@ -15,9 +15,9 @@ use crate::memory::{GpuAllocation, ManagerId, MemoryUpdateType};
 use crate::resource::{ShaderId, TextureId};
 use crate::vertex::{Vertex, VertexLayout};
 
-// 頂点の要素をどこまで書いたか（§10 頂点の並び方の警告）
+// 頂点の要素をどこまで使ったか（§10 頂点の並び方の警告）。0 以外の値がある要素を使ったとみなす
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum VertexElements {
+enum VertexElements {
     Position,
     Color,
     Uv,
@@ -25,6 +25,20 @@ pub(crate) enum VertexElements {
 }
 
 impl VertexElements {
+    fn used_by(vertex: &Vertex) -> Self {
+        let any = |values: &[f32]| values.iter().any(|&value| value != 0.0);
+
+        if any(&[vertex.n_x, vertex.n_y, vertex.n_z]) {
+            VertexElements::Normal
+        } else if any(&[vertex.u, vertex.v]) {
+            VertexElements::Uv
+        } else if any(&[vertex.r, vertex.g, vertex.b, vertex.a]) {
+            VertexElements::Color
+        } else {
+            VertexElements::Position
+        }
+    }
+
     fn of(layout: VertexLayout) -> Self {
         match layout {
             VertexLayout::Position => VertexElements::Position,
@@ -187,10 +201,10 @@ impl<I: InstanceData> ObjectCore<I> {
     }
 
     // 前フレームの値と比較しながら書き込み、変わった位置を記録する（§1・§4）
-    pub(crate) fn write_vertex(&mut self, vertex: Vertex, elements: VertexElements) {
+    pub(crate) fn write_vertex(&mut self, vertex: Vertex) {
         let position = self.vertex_cursor;
         self.vertex_cursor += 1;
-        self.elements_written = self.elements_written.max(elements);
+        self.elements_written = self.elements_written.max(VertexElements::used_by(&vertex));
 
         match self.vertices.get_mut(position) {
             Some(old) if *old == vertex => {}
@@ -600,7 +614,7 @@ impl<I: InstanceData> ObjectCore<I> {
     // VertexLayout に含まれない要素を書いた場合、Object ごとに 1 回だけ警告する（§10 頂点の並び方）
     fn warn_vertex_elements(&mut self, layout: VertexLayout) {
         if self.elements_written > VertexElements::of(layout) && self.warned.insert("vertex_elements") {
-            log::warn!("VertexLayout::{layout:?} に含まれない頂点の要素が書かれました。余分な要素は捨てます");
+            log::warn!("VertexLayout::{layout:?} に含まれない頂点の要素に 0 以外の値があります。余分な要素は捨てます");
         }
     }
 
@@ -681,4 +695,21 @@ fn replace_tracking<T: PartialEq>(old: &mut Vec<T>, new: Vec<T>, dirty: &mut Opt
     }
 
     *old = new;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn used_elements_come_from_non_zero_values() {
+        let used = |vertex: Vertex| VertexElements::used_by(&vertex);
+
+        assert_eq!(used(Vertex { x: 1.0, y: 2.0, z: 3.0, ..Default::default() }), VertexElements::Position);
+        assert_eq!(used(Vertex { a: 1.0, ..Default::default() }), VertexElements::Color);
+        assert_eq!(used(Vertex { v: 0.5, ..Default::default() }), VertexElements::Uv);
+        // 後ろの要素に値があれば、前の要素が 0 でもそこまで使ったとみなす（VertexLayout は前から順に足す形）
+        assert_eq!(used(Vertex { n_y: 1.0, ..Default::default() }), VertexElements::Normal);
+        assert_eq!(used(Vertex::new_position_color(0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0)), VertexElements::Color);
+    }
 }
