@@ -138,7 +138,7 @@ mod tests {
         let mut bytes = vec![0; layout.stride()];
         vertex.write_packed(layout, &mut bytes);
 
-        bytes.chunks_exact(4).map(|chunk| f32::from_ne_bytes(chunk.try_into().unwrap())).collect()
+        bytes.as_chunks::<4>().0.iter().map(|&chunk| f32::from_ne_bytes(chunk)).collect()
     }
 
     #[test]
