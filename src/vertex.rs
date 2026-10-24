@@ -82,6 +82,10 @@ impl Vertex {
             0.0,
         )
     }
+    
+    pub fn translate(self, x: f32, y: f32, z: f32) -> Self {
+        Self { x: self.x + x, y: self.y + y, z: self.z + z, ..self }
+    }
 }
 
 // DrawManager* ごとに選ぶ頂点の要素（§10 頂点の並び方）。要素は前から順に足していく形

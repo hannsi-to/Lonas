@@ -1,3 +1,5 @@
+extern crate core;
+
 pub mod color;
 pub mod config;
 pub mod draw;
@@ -14,6 +16,7 @@ pub(crate) mod slots;
 pub(crate) mod texture;
 pub mod vertex;
 pub mod wgsl;
+pub mod util_2d;
 
 #[cfg(test)]
 mod send_check;
