@@ -1524,7 +1524,7 @@ Matrix4f::from_trs(translation: Vector3f, rotation: Quaternion, scale: Vector3f)
 
 ```rust
 // 決定：ResourceManager は GpuContext とは別の型としてユーザーが持つ。GPU にはアクセスしない
-let mut resource_manager = ResourceManager::new();
+let mut resource_manager = ResourceManager::new(ResourceConfig { text: TextConfig { /* §13 CPU 側の設定 */ } });
 let shader_id: ShaderId = resource_manager.register_shader(wgsl_source)?;          // naga で検査し、エラーなら Err
 let texture_id: TextureId = resource_manager.register_texture(encoded_bytes)?;     // PNG / JPEG など
 let texture_id: TextureId = resource_manager.register_texture_rgba(width, height, &rgba_bytes)?; // RGBA の生データ
@@ -2254,3 +2254,406 @@ gpu.set_anti_aliasing(surface_id, AntiAliasing::Taa)?;
 | 失われたかを問い合わせる関数を足す | 呼び忘れると気付けず、呼ばないまま次の `end_frame` が来たときの扱いを別に決める必要がある |
 | 設定でコールバックを受け取る | wgpu のスレッドで呼ばれるため中で作り直しはできず、結局フラグを立てて問い合わせる形になる |
 | panic にする | 誤用ではなく環境に起因するため、§11 エラーの方針に反する。アプリが作り直して続けられない |
+
+---
+
+## 13. テキスト
+
+文字を描く仕組み。描き方を複数用意する（ベクター・SDF / MSDF・ビットマップ）。
+
+### 全体の構成
+
+**決定：テキストの処理を 4 つの層に分ける。1・2 は描き方によらず共通にする。**
+
+| 層 | 中身 | 描き方ごとの違い |
+|---|---|---|
+| 1. フォント | フォントのデータを `ResourceManager` に登録し、`FontId` で参照する（下記） | 共通 |
+| 2. 整形・配置 | HarfRust でグリフの番号と位置を求め、行送り・折り返しを行う | 共通 |
+| 3. グリフのキャッシュ | ベクター：三角形化した形 / SDF・MSDF・ビットマップ：アトラス上の画素 | 描き方ごと |
+| 4. `Object*` への書き込み | `util_2d` と同じく、`Object*` に頂点（とインデックス）を書く補助関数 | 描き方ごと |
+
+- **決定：整形は HarfRust で行う。**合字・カーニング・複雑な文字体系を自前で扱わない
+- **決定：グリフは使った文字だけをその場で作り、キャッシュする。**日本語のように文字の数が多いと、前もってすべてを作れないため
+- SDF / MSDF は msdfgen で作る（Cargo の feature は下記）
+
+### フォントの登録
+
+**決定：フォントは `ResourceManager` に登録する。グリフのキャッシュも `ResourceManager` が持つ。**
+
+```rust
+let font_id: FontId = resource_manager.register_font(font_bytes)?; // 読めなければ Err
+resource_manager.unregister_font(font_id);
+```
+
+- シェーダー・テクスチャと同じ形にそろえる（§11 ResourceManager）。`FontId` も発行元・番号・世代を持つ
+- 登録を解除したフォントのグリフはキャッシュから捨てる。解除したフォントを使う `TextLayout` を `write_text` に渡したら panic（無効な ID の扱い、§11 登録解除と同じ）
+- 書き込みの補助関数は `&mut ResourceManager` を受け取る（キャッシュに足すため）。`Object*::end` と `end_frame` の間で借用がぶつからない
+- SDF / MSDF・ビットマップのアトラスを GPU に送るときに、テクスチャと同じ `end_frame` の経路（§11 GPU との分担）を使える
+- 却下案：テキスト専用の型（`FontSystem` など）をユーザーが持つ。`ResourceManager` は増えないが、GPU に送るものができたときに `end_frame` までの経路を別に作る必要がある
+
+### CPU 側の設定：TextConfig
+
+**決定：グリフを作る側の設定は `TextConfig` にまとめ、`ResourceManager::new` で受け取る。**
+
+```rust
+let mut resource_manager = ResourceManager::new(ResourceConfig {
+    text: TextConfig {
+        sdf_em_size: 48,                      // Sdf / Msdf を作るときの 1 em の大きさ（画素）
+        sdf_range: 8.0,                       // Sdf / Msdf の距離の幅（画素）。太字・縁取りで太らせられる量の上限になる
+        max_new_glyphs_per_frame: Some(64),   // write_text が 1 フレームに作るグリフの上限。None なら上限なし（下記）
+        vector_cache_max_bytes: 64 << 20,     // ベクターのキャッシュの上限（バイト、下記）
+    },
+});
+```
+
+- グリフの画素・三角形化は `ResourceManager` が CPU で行う（上記）。`LonasConfig` は `GpuContext::new` にしか渡らないため、`ResourceManager` が要る値はこちらで受け取る。最初の `end_frame` より前（読み込みの間の `prepare_glyphs` など）でも使える
+- GPU 側の設定（アトラスの大きさ・レイヤー・余白）は `LonasConfig::glyph_atlas` に残す。`ResourceManager` はアトラスの設定を知らない（§11 GPU との分担）
+- `LonasConfig` と同じく既定値を設けない（§3）。`text` feature を外した場合、`ResourceConfig` に `text` の項目はない
+- 値の検査（`ResourceManager::new`、不正なら panic）：`sdf_em_size` が 0、`sdf_range` が 0 以下か有限でない、`max_new_glyphs_per_frame` が `Some(0)`
+- 却下案：`set_text_config` を足し、`new()` は変えない。呼び忘れが実行時まで分からない
+- 却下案：`ResourceManager::new(&LonasConfig)`。設定は 1 つにまとまるが、`ResourceManager` が GPU 側の設定まで受け取ることになる
+
+### ベクター：輪郭の三角形化
+
+**決定：グリフの輪郭は skrifa で取り出し、三角形化は lyon（`lyon_tessellation` の `FillTessellator`）で行う。§10 の `Fill` は使わない。**
+
+- 輪郭は HarfRust と同じ fontations（read-fonts / skrifa）から取る。フォントの解析を別に持たない
+- フォントの輪郭は nonzero の規則で塗る。合成グリフや可変フォントでは輪郭どうしが重なることが多く、穴を `begin_hole()` で明示し、重なりを扱わない `Fill` では描けない。lyon は `FillRule::NonZero` で重なりをそのまま扱える
+- 却下案：`Fill` を nonzero に対応させる。重なった輪郭の交点を求める処理が要り、単調多角形分割の手順が大きく変わる
+
+**決定：三角形化したグリフはキャッシュし、`vertex()` と `index()` で `Object*` に書き込む。毎フレームの三角形化はしない。**
+
+- 1 つの `Object*` の中で `index()` で指定する形と自動で作る形を混ぜられるため（§10 インデックス）、グリフごとに `begin_shape()` で区切って `index()` で書く。番号は `Object*` 全体の通し番号なので、その時点の頂点数だけずらす
+- 同じ文字列を毎フレーム書けば、頂点もインデックスも前のフレームと同じになり、転送は起きない（§1・§4）
+- 文字列が変わると頂点の数が変わるため、テキストの `Object*` は Dynamic にする（Static では panic、§6）
+
+**決定：曲線を折れ線にする細かさは、画面上の許容誤差 0.25px（`util_2d` の円と同じ）で決める。文字の大きさは 2 倍ごとの段階に切り上げて三角形化する。**
+
+- キャッシュは em を 1 とした単位で持ち、書き込むときに文字の大きさで拡大する。許容誤差は em 単位で `0.25 / 段階の大きさ(px)` になる
+- キャッシュのキーは `(FontId, グリフの番号, 大きさの段階)`。可変フォントの軸の値は、扱うときにキーへ足す
+- 1 つのグリフの形は大きさの段階の数（数種類）で済む。切り上げるため、誤差は常に 0.25px 以下になる
+- 却下案：許容誤差を 1 つの値に固定する。大きい文字で角が見え、小さい文字で頂点が無駄になる
+
+**決定：ベクターのキャッシュは `TextConfig::vector_cache_max_bytes` を上限とし、超えたら最後に使ったフレームが古い形から捨てる。**
+
+- 日本語と大きさの段階ごとの形で、長く動かすほど増え続けるため（アトラスの追い出しと同じ考え方、下記の「満杯の時」）
+- 使ったフレームは `write_text` で記録し、捨てるのは `end_frame` で行う。そのフレームに使った形は捨てない
+- そのフレームに使う形だけで上限を超えた場合は、panic せず超えたままにする（CPU のメモリで、アトラスのような置き場所の限りがないため）
+- 捨てた形は、次に使う時に三角形化し直す。`Object*` に書いた頂点は `Object*` 側にあるため、捨てても描画には影響しない
+- 却下案：決まったフレーム数使わなかった形を捨てる。メモリの量が決まらず、しばらく隠した画面の字を作り直すことになる
+
+**決定：作る三角形は xy 平面で反時計回りに揃える**（2D の `Fill`・`Stroke` と同じ、§10）
+
+- キャッシュはフォントの座標（y が上向き）のまま、反時計回りで持つ。lyon の出力の向きには頼らず、キャッシュを作るときに三角形ごとの符号付き面積で揃える（1 回だけの処理）
+- 書き込むときに `YAxis::Down`（下記）なら y を反転し、反転で向きが逆になるため、三角形ごとにインデックスの順を入れ替える
+- 3D でも同じ形を xy 平面に置く。別の向きにしたい場合はインスタンスの変換で回す（§10 線：Stroke と同じ）
+
+### 整形と書き込みの分け方
+
+**決定：整形（`layout_text`）と書き込み（`write_text`）を分ける。**
+
+```rust
+// 文字列か書式が変わった時だけ
+let layout: TextLayout = resource_manager.layout_text(&TextStyle {
+    families: vec![FontFamily::new(font_id)], // 先頭から字を探す（下記の「フォントの組とフォールバック」）
+    size: 24.0,                        // 1 em の大きさ。頂点と同じ単位（2D ならピクセル）
+    line_height: LineHeight::Font(1.0), // フォントの推奨の行送り × 1.0。LineHeight::Fixed(px) も選べる
+    letter_spacing: 0.0,               // 字間に足す量
+    max_width: Some(300.0),            // None なら改行文字でだけ改行する
+    align: TextAlign::Left,            // Left / Center / Right
+    bold_weight: 0.03,                 // TextFormat::Bold で太らせる量（em に対する割合）
+    outline_width: 0.05,               // TextFormat::Outline の太さ（em に対する割合）
+}, &Formatted::parse("§[red]赤い字§[/]ふつうの字")?);
+let size = layout.size();              // 描く前に幅・高さが分かる（UI の配置に使う）
+
+// 毎フレーム
+object.begin();
+write_text(&mut object, &mut resource_manager, &layout, &TextWrite {
+    position: Vector3f::new(10.0, 10.0, 0.0), // 1 行目の左上（下記の「位置と揃え」）
+    color: Color::WHITE,                       // 書式で色を上書きしていない字の色
+    y_axis: YAxis::Down,                       // 2D の TopLeft なら Down、それ以外（3D を含む）は Up
+    pixel_scale: 1.0,                          // 1 単位が画面の何ピクセルか。曲線の細かさに使う（下記）
+    obfuscation_seed: 0,                       // TextFormat::Obfuscated で選ぶ字の種
+    method: GlyphMethod::Vector,               // 描き方（下記の「描き方の選択」）
+});
+object.end(&mut draw_manager);
+```
+
+- 文字列が変わらなければ HarfRust を毎フレーム呼ばずに済む。書き込みはキャッシュした形を写すだけ
+- 色・位置・種は `TextWrite` に置き、変えても整形し直さない
+- **決定：`write_text` は `Object2D` と `Object3D` の両方に使える。**両方に実装した crate の外から実装できないトレイトで受け取る（`Object*` の関数はマクロで型ごとに作っているため、共通のトレイトがない）
+- `write_text` は `begin`〜`end` の間で呼ぶ。同じ `Object*` に何度呼んでもよい（他の頂点と混ぜてもよい）。グリフごとに `begin_shape()` で区切り、`index()` で書く（上記）
+- テキストの `Object*` には `paint_type()` を呼ばなくてよい（すべての形で `index()` を呼ぶため、§10 塗り方）
+- **決定：y の向きは `TextWrite::y_axis` で受け取る。**`Object*` も `ResourceManager` も `Origin2D`（§11 座標系）を知らないため。`TextLayout` は向きによらず共通にできる
+  - 却下案：`Object2D` が初回の `end` で `DrawManager2D` から向きを受け取る。初回の `end` より前のフレームでは分からず、3D では意味を持たない
+- **決定：曲線の細かさの段階は `size × pixel_scale`（画面上の大きさ）から選ぶ。**2D で `Camera2D::zoom` が 1 なら `1.0`。3D は画面上の大きさが距離で変わるため、使う側が見込みの値を渡す
+
+### 書式：TextFormat
+
+**決定：文字列の途中で書式を切り替える `TextFormat` を用意する。**gueiz の `TextFormat`・`Formatted` を元にする。
+
+```rust
+pub enum TextFormat {
+    Color(Color),                 // これ以降の字の色を上書きする
+    DefaultColor,                 // 色の上書きをやめ、TextWrite::color に戻す
+    Obfuscated,                   // これ以降の字を出鱈目な字に置き換える。送り幅は元のまま
+    Bold,                         // これ以降の字を太くする
+    FontSize(f32),                // これ以降の字の大きさ
+    Strikethrough(LineDecoration),// 打消し線
+    Underline(LineDecoration),    // 下線
+    Overline(LineDecoration),     // 上線
+    Italic(f32),                  // これ以降の字を傾ける。値は傾きの量
+    Ghost(f32),                   // これ以降の字を透かす。値は透ける割合で、1 なら消える
+    HideBox,                      // これ以降の字を、字の大きさに合った箱で隠す
+    Shadow(Shadow),               // これ以降の字に影を落とす
+    Outline(Color),               // これ以降の字に縁取りを付ける
+    NewLine,                      // 改行する
+    SpaceX(f32),                  // これ以降の字間
+    SpaceY(f32),                  // これ以降の行間に足す量
+    SkipPush,                     // 積み上げた書式を退避して、素の状態に戻す
+    SkipPop,                      // SkipPush で退避した書式に戻す
+    Reset(ResetTarget),           // 書式を元に戻す（All か、項目ごと）
+}
+
+pub struct LineDecoration { pub line_width: f32, pub joint_type: JointType, pub lines: u32 } // 太さは em に対する割合。lines が 2 なら二重線
+pub struct Shadow { pub distance: f32, pub angle: f32 } // distance は em に対する割合、angle は度（右が 0、画面上で時計回り）
+```
+
+- 色は gueiz の `[f32; 4]` ではなく `Color`（sRGB、§11 色）で受け取る。頂点の色と扱いを揃えるため
+- **決定：書式は文字列に埋め込んで書く（`§[red]` など、gueiz と同じ書き方）。`Formatted::parse` を通したときだけ解釈する。**
+  - `Formatted::plain(text)` は書式を解釈しない。利用者の入力など、外から来た文字列に書式を差し込まれないようにするため
+  - `Formatted::new()` と `text()` / `format()` で、コードから組み立てることもできる
+  - 名前の付いた色（`TextFormat::RED` など）・目印の変更（`parse_with`）も gueiz と同じ
+
+**作り方（ベクター）：**
+
+| 書式 | 作り方 | 影響する層 |
+|---|---|---|
+| `Color` / `DefaultColor` / `Ghost` | 頂点の色に入れる。`Ghost` は不透明度に `1 - 値` を掛ける | 書き込み |
+| `Italic`（斜体の書体がない場合） | 書き込むときに頂点を `x += 値 × y`（フォントの座標）でずらす。キャッシュの形は変えない | 書き込み |
+| `Bold`（太字の書体がない場合） | 輪郭を上下左右に `bold_weight` だけずらした複製を **1 つのパスに入れ、nonzero で三角形化** する。重なりが 1 つの面になるため、半透明でも重なった部分が濃くならない。送り幅は変えない | キャッシュ |
+| `Outline` | 輪郭を輪のように 8 方向へ `outline_width` ずらした複製を nonzero で 1 つにし、字の **後ろ** に書く | キャッシュ |
+| `Shadow` | 字（と縁取り）と同じ形を、ずらして一番後ろに書く | 書き込み |
+| `Obfuscated` | 書き込むときに、同じ送り幅の場所へ候補の字（gueiz の `OBFUSCATION_POOL`）から種で選んだ字を書く。候補の字は、その場所の字と同じフォントから取る（ない字は候補から外す） | 書き込み |
+| `HideBox` | 字の代わりに、送り幅 × 行の高さの四角形を書く | 書き込み |
+| 下線・打消し線・上線 | 位置と太さはフォントの値（`post` / `OS/2` テーブル）を使う。同じ線が続く字をまとめて 1 本にし、`Stroke` と同じ処理（`object/stroke.rs`）で端を `joint_type` に合わせる | 整形で位置、書き込みで形 |
+| `FontSize` / `SpaceX` / `SpaceY` / `NewLine` | 並べ方に使う | 整形 |
+
+- 合成した太字と `Outline` の形はキャッシュのキーに含める（`(FontId, グリフ, 大きさの段階, 合成の太字, 縁取り)`）。`Italic` はキーに含めない
+- 1 つのグリフの中では、影 → 縁取り → 字 の順にインデックスを書く。2D は深度バッファを持たないため、同じ DrawCall の中では書いた順に重なる（§10 深度バッファとクリア）
+- `Bold`・`Italic` は、`FontFamily` に太字・斜体の書体があればそちらを使い、上の合成はしない（下記）。斜体の書体を使う場合、`Italic` の値（傾きの量）は使わない
+
+### 整形・折り返し
+
+**決定：折り返しは UAX #14（`unicode-linebreak`）に従う。**
+
+- 日本語の字の間でも折り返し、行頭に来てはいけない句読点などの規則も含まれる
+- 折り返せる場所がなく幅に収まらない場合は、クラスター（HarfRust の cluster）の境目で切る
+- `max_width: None` なら、改行文字と `TextFormat::NewLine` でだけ改行する
+- 整形の手順：
+  1. `Formatted` を、HarfRust に渡す区間（run）に分ける。分けるのは **字の形と送り幅が変わるところ**（`FontSize`、使う書体が変わる位置：フォールバックと、太字・斜体の書体への切り替え）と改行の位置だけ。色などが変わってもカーニングが途切れない
+  2. 区間ごとに HarfRust で整形し、クラスターごとの送り幅を求める（`SpaceX` はここで足す）
+  3. 折り返せる場所を UAX #14 で求め、幅に収まる最後の場所で改行する。改行した場所で整形し直さない（行をまたぐ合字はまれなため）
+- 書く向きは左から右の横書きだけ。右から左（アラビア語など）の混在（双方向）と縦書きは扱わない。文字体系と言語は区間ごとに HarfRust の推定に任せる
+- どの `FontFamily` にもない字は、先頭のフォントの `.notdef`（多くのフォントで四角）を描く
+
+### 位置と揃え
+
+- `TextWrite::position` は **1 行目の上端（ascender）の左端**。`TextAlign` の基準も、この点から `layout.size()` の幅の中で揃える
+  - `Left`：行の左端を揃える。`Center` / `Right`：レイアウト全体の幅の中で、行ごとに中央 / 右に寄せる
+- 縦の揃え（箱の中で中央に置くなど）は持たない。`layout.size()` から使う側が位置を決める
+- 行の高さは、その行で一番大きい `FontSize` の行送りにする。`SpaceY` はその行の下に足す
+
+### フォントの組とフォールバック
+
+**決定：太字・斜体の書体をまとめた `FontFamily` を、優先する順に `TextStyle::families` に並べる。字がない場合は次の `FontFamily` で描く。**
+
+```rust
+let jp = FontFamily::new(noto_jp).bold(noto_jp_bold); // 斜体の書体なし → 傾けて作る
+let emoji = FontFamily::new(noto_emoji);
+
+TextStyle {
+    families: vec![latin, jp, emoji], // 先頭から探す
+    ..
+}
+
+pub struct FontFamily {
+    pub regular: FontId,
+    pub bold: Option<FontId>,
+    pub italic: Option<FontId>,
+    pub bold_italic: Option<FontId>,
+}
+```
+
+- 書体の選び方：太字・斜体の状態に合う書体を選ぶ。`bold_italic` がなければ `bold` に傾きを合成し、それもなければ `italic` に太さを合成し、それもなければ `regular` に両方を合成する
+- フォールバックはクラスターごとに判定する。クラスターのすべての文字を持つ（cmap にある）最初の `FontFamily` を使う。`FontFamily` が変わる位置で HarfRust の区間を分ける
+- グリフのキャッシュのキーの `FontId` は、実際に使った書体のもの
+- 行送り・下線などの位置は、先頭の `FontFamily` の `regular` の値を使う。フォールバックの字が上下にはみ出しても行の高さは変えない（行によって行送りが揺れないようにするため）
+- `families` が空なら `layout_text` で panic（誤用）
+- 色の付いたフォント（絵文字の COLR など）の色は使わず、輪郭だけを 1 色で描く
+- 却下案：フォールバックの `Vec<FontId>` だけを持ち、太字・斜体は常に合成する。合成の太字は本物の書体より形が崩れやすい
+
+### 3D の影・縁取り
+
+**決定：3D で影・縁取りを付けたテキストは `Blend::Alpha` で描く。**
+
+- 不透明は深度を書き、`Greater` で比べる（§11 深度バッファ）ため、同じ深さで後から書いた字が消える
+- 3D の半透明は深度を書かない（§10 描画順）。`Object*` の中ではインデックスの順に重なるため、影 → 縁取り → 字 の順に正しく描ける
+- `write_text` は、影・縁取りのある `TextLayout` を、`blend()` で `Opaque` を指定した `Object3D` に書いた時に、一度だけ `log` で警告する（`blend()` を呼んでいない場合は `LonasConfig` の値が使われ、`Object*` からは分からないため警告しない）
+- 却下案：影・縁取りを z 方向にずらす。どちらが「後ろ」かは見る向きで変わり、裏から見ると影が手前に来る。ずらす量も距離で変わる
+
+### 小さい文字
+
+**注意：ベクターの文字は、輪郭のぎざぎざを MSAA / TAA（§11 アンチエイリアス）に頼る。**FXAA だけ・アンチエイリアスなしでは、小さい文字は粗くなりやすい。小さい UI の文字には、ビットマップか SDF の方式を使う（描き方を複数用意する理由の 1 つ）。
+
+- 却下案：輪郭の外側に、不透明度が 0 になる 1px の帯の三角形を足す。帯の幅は `pixel_scale` で変わるため書き込みごとに作り直す必要があり、半透明の描画も必要になる
+
+### Cargo の feature
+
+**決定：テキストの依存は `text` feature にまとめ、既定で有効にする。msdfgen は別の `msdf` feature にし、既定で無効にする。**
+
+| feature | 依存 | 既定 |
+|---|---|---|
+| `text` | harfrust・skrifa・lyon_tessellation・unicode-linebreak・zeno | 有効（`image` と同じ） |
+| `msdf` | msdfgen（C++。ビルドに C++ のコンパイラが要る） | 無効 |
+
+### 描き方の選択
+
+**決定：描き方は `TextWrite::method` で選ぶ。**整形の結果（`TextLayout`）は描き方によらず共通。
+
+```rust
+pub enum GlyphMethod {
+    Vector, // 輪郭を三角形化（上記）
+    Bitmap { hinting: Hinting }, // 画面上の大きさでラスタライズした画素（ヒンティングは下記）
+    Sdf,    // 符号付き距離（msdf feature）
+    Msdf,   // 多チャンネルの符号付き距離（msdf feature）
+}
+```
+
+- 描き方ごとに使うシェーダーが違う（下記）。描き方を変えたら `Object*` のシェーダーも変える
+- `Sdf` / `Msdf` を `msdf` feature なしで使うと panic（誤用）。列挙子は feature によらず残し、`TextWrite` の形を変えない
+
+### グリフのアトラス
+
+**決定：`Bitmap` / `Sdf` / `Msdf` のグリフは、テクスチャの `TextureAtlas`（§11）とは別の、グリフ専用のアトラスに置く。**
+
+- 今のアトラスは `Rgba8UnormSrgb` で、距離の値を sRGB として読むと歪む。また 1 画素 4 バイトで、1 チャンネルで済むグリフには無駄が多い
+- **フォーマット：**`Bitmap`（覆い率）と `Sdf` は `R8Unorm`、`Msdf` は `Rgba8Unorm`（MTSDF：rgb が多チャンネルの距離、a が通常の距離）。どちらも線形のまま読む。フォーマットごとに `texture_2d_array` を 1 つずつ持つ
+- 棚方式の詰め込み・余白・レイヤーを増やす仕組みは `TextureAtlas` と同じ（§11 詰め込み方・容量を超えた場合）。配置は `end_frame` で `GpuContext` が決める（§11 GPU との分担）
+- **ミップマップは作らない。**`Bitmap` は画面上の大きさで作るため要らず、`Sdf` / `Msdf` は縮小しても距離から境目を求められる（ミップマップで距離を平均すると形が崩れる）
+- サンプラーは線形補間のものを別に持つ（テクスチャのアトラスのサンプラーは `Nearest` にできるため）
+
+```rust
+pub struct GlyphAtlasConfig {
+    pub size: u32,           // 1 レイヤーの幅・高さ（画素、正方形）
+    pub initial_layers: u32, // フォーマットごとに最初に作るレイヤー数
+    pub max_layers: u32,     // フォーマットごとのレイヤー数の上限
+    pub padding: u32,        // 各グリフの周りの余白（画素）
+}
+// LonasConfig::glyph_atlas に置く。値の検査は TextureAtlasConfig と同じ
+```
+
+- `GlyphAtlasConfig` は GPU 側（アトラスの置き場所）の設定だけを持つ。グリフの画素を作る側の設定は `TextConfig`（下記の「CPU 側の設定」）に置く
+
+#### 頂点からの参照：グリフの番号と表
+
+**決定：アトラス上のグリフは番号（グリフのスロット）で指し、番号から範囲とレイヤーを引く表（`glyph_rects`）を `GpuContext` が持つ。`texture_rects`（§11 UV の変換）と同じ形。**
+
+```wgsl
+struct GlyphRect {
+    rect: vec4<f32>, // アトラス上の範囲（xy = 左上の UV、zw = 大きさの UV）。余白は含まない
+    layer: u32,
+    // 距離の幅を UV に直す値など、Sdf / Msdf の計算に要るもの（細部は実装で決める）
+}
+
+// write_text が書く頂点（Bitmap / Sdf / Msdf）
+uv       = グリフの四角形の中の 0〜1
+normal.x = グリフのスロット番号（f32 で表す整数）
+normal.y = 太らせる量（Sdf / Msdf の太字・縁取り。em に対する割合）
+normal.z = 0
+```
+
+- `texture_slot` はインスタンスごとに 1 つのため、1 つの `Object*` で多くのグリフを指すのに使えない。番号を頂点に持たせる
+- 配置は `end_frame` で決まるため、`write_text` の時点でアトラス上の位置は分からない。番号なら書き込みの時点で分かり、追い出して置き直しても頂点を書き直さなくてよい
+- **アトラスを使う描き方のテキストの頂点では、`normal` を法線として使えない。**テキストは平らなため、法線が要るシェーダーは定数（0, 0, 1）を使う
+- `normal` を送るため、アトラスを使う描き方の `Object*` は `VertexLayout::PositionColorUvNormal` の `DrawManager*` で描く（他の `VertexLayout` では番号が捨てられ、§10 頂点の並び方の警告が出る）
+- **番号 0 は塗りつぶしの領域にする**（覆い率 1、距離は内側）。`HideBox`・下線などの線は、番号 0 を指す形で書く。テキストの `Object*` の中を 1 つのシェーダーで描ける（テクスチャの番号 0 の予約、§11 texture() を呼ばなかった Object* と同じ考え方）
+- 表は番号の最大値まで大きくする。追い出した番号は再利用されるまで古い値を残す
+- 却下案：`uv` にアトラス上の座標を直接入れる。レイヤーを `uv` の整数部などに詰める必要があり、配置を `ResourceManager` が決めるために、アトラスの設定を `ResourceManager` が知ることになる
+
+#### グリフの作り方
+
+| 描き方 | 作る場所 | キャッシュのキー | 太字・縁取り |
+|---|---|---|---|
+| `Bitmap` | zeno で、画面上の大きさ（`size × pixel_scale` を整数の画素に丸めた値）でラスタライズする | `(FontId, グリフ, 画素の大きさ, ヒンティング, 合成の太字, 縁取り)` | ベクターと同じく、ずらした複製を 1 つのパスにまとめ、nonzero で塗る |
+| `Sdf` / `Msdf` | msdfgen で `sdf_em_size` の大きさで作る | `(FontId, グリフ)` | シェーダーで境目を `normal.y` だけ外にずらす。縁取りは、`outline_width` だけ大きくした四角形を字の後ろに書き、縁取りの色を頂点の色に入れる |
+
+- **決定：グリフの画素は、キャッシュにないものを `write_text` の中で（CPU で）作る。**転送は `end_frame` でテクスチャと同じ経路を使う
+  - 初めて出てくる字が多いフレーム（日本語の長い文章など）は、そのフレームの `write_text` が重くなる
+- **決定：ラスタライズには zeno を使う。**nonzero の塗りに対応し、覆い率を正確に求める。重なった輪郭や合成の太字をそのまま扱える
+  - 却下案：ab_glyph_rasterizer（塗りの規則を持たず覆い率を足し合わせるため、重なった部分の濃さがおかしくなる）
+  - 却下案：lyon で三角形化した形を GPU で MSAA を使って描く（覆い率がサンプル数の段階しかなく、小さい文字の質が落ちる）
+- `Bitmap` は字の左上を画素の格子にそろえる（`pixel_scale` で画素の大きさを求める）。ぼやけないようにするため。画素より細かい位置に応じた作り分けはしない
+- `Bitmap` は画面上の大きさで作るため、拡大・縮小・3D の斜めからの表示には向かない。その用途には `Sdf` / `Msdf` か `Vector` を使う
+- `Sdf` / `Msdf` で太らせる量（`bold_weight`・`outline_width`）が `sdf_range` で表せる量を超えたら、表せる量に切り詰め、一度だけ `log` で警告する
+- `Italic`・`Shadow`・`Obfuscated` はベクターと同じく、書き込む時に四角形をずらす・傾ける・差し替える
+
+#### 満杯の時：追い出し
+
+**決定：レイヤーを `max_layers` まで増やした後は、最後に使ったフレームが古いグリフから追い出す。**
+
+- `write_text` でグリフを書いた時に、`ResourceManager` がそのグリフの最後に使ったフレームを記録する（`Object*` は毎フレーム `begin`〜`end` で書き直すため、描いているグリフは毎フレーム記録される）
+- `end_frame` で置き場所が足りない時は、そのフレームに使わなかったグリフを古い順に追い出し、棚の空きを再利用する
+- そのフレームに使うグリフだけで溢れた場合は panic（テクスチャの容量超過と同じ扱い、§11 容量を超えた場合）
+- 却下案：テクスチャと同じく `max_layers` を超えたら panic。長く動かすと使った字が増え続け、いつか止まる
+
+#### シェーダー
+
+**決定：グリフの覆い率を求める WGSL の関数と、それを使ったテキスト用のシェーダーの両方を用意する。**
+
+```rust
+// 関数：自分のシェーダーに組み込む（STRUCTS と同じく先頭につなげる）
+lonas::wgsl::GLYPH // GlyphRect と、lonas_glyph_bitmap / lonas_glyph_sdf / lonas_glyph_msdf（median・fwidth でのぼかし）
+
+// 完成品：バインディング番号が BindingConfig 次第のため、設定から WGSL を作る
+let src = lonas::wgsl::text_shader(&config.bindings, GlyphMethod::Msdf, Dimension::D2);
+let shader = resource_manager.register_shader(&src)?;
+```
+
+- 完成品は頂点の色 × 覆い率を出す。`Vector` 用は頂点の色をそのまま出す
+- `BindingConfig` に `glyph_atlas_r8`・`glyph_atlas_rgba`・`glyph_sampler`・`glyph_rects` を足す（§11 バインドグループ・バインディング番号）
+
+#### ヒンティング
+
+**決定：`Bitmap` だけ、`GlyphMethod::Bitmap { hinting }` でヒンティングを選べる。**
+
+```rust
+pub enum Hinting {
+    None,  // 輪郭をそのまま使う
+    Light, // skrifa の自動ヒンティングを縦方向だけに使う
+}
+```
+
+- `Light` は横線の上下の位置を画素の格子に合わせ、小さい文字のぼやけを減らす。横方向は変えないため、送り幅も変わらず、`TextLayout`（整形の結果）は描き方によらず共通のまま
+- `Bitmap` は画素の大きさごとに作るため、キャッシュのキーにヒンティングの有無を足すだけで済む
+- 合成の太字・縁取りは、ヒンティングした輪郭をずらして作る
+- `Vector` / `Sdf` / `Msdf` は拡大・縮小する前提のため、ヒンティングしない
+- 却下案：横方向も合わせる `Full`（フォントの TrueType の命令を使う）。送り幅が画素の大きさごとに変わり、整形の結果が描き方と大きさに依存する
+
+#### グリフを作る負担を分ける
+
+**決定：グリフを前もって作る `prepare_glyphs` と、`write_text` が 1 フレームに作るグリフの上限（`TextConfig::max_new_glyphs_per_frame`）の両方を用意する。**
+
+```rust
+// 読み込み画面などで、書き込まずにグリフだけ作る
+resource_manager.prepare_glyphs(&layout, GlyphMethod::Msdf, pixel_scale);
+```
+
+- `prepare_glyphs` は `TextLayout` に出てくるグリフを、指定した描き方で作ってキャッシュに入れる（`Vector` なら三角形化、他はアトラスの画素）。上限は受けない
+  - 作ったグリフはそのフレームに使ったものとして記録する。ただしアトラスが満杯なら、使う前に追い出されることがある（上記の「満杯の時」）
+  - `ResourceManager` は毎フレームの `end_frame` に要るため、別のスレッドで呼ぶには一時的に渡す必要がある。主な使い方は読み込みの間に呼ぶこと
+- `write_text` は、上限を超えた分のグリフをそのフレームには作らず、**描かない**。次のフレーム以降に作られて現れる（`Object*` の頂点の数が変わるため、テキストの `Object*` は Dynamic、上記）
+  - 書いた順に作るため、文章の先頭から現れる
+  - 上限は全部の描き方に効く（`Vector` の三角形化も含む）。`None` なら上限なし
+  - 1 フレームに作った数は `end_frame` で 0 に戻す（`ResourceManager` は `end_frame` でフレームの区切りを知る）
+- 却下案：上限を超えた字を、仮に別の描き方（`Vector` など）で描く。仮の形を作る負担がかかり、見た目も途中で変わる
