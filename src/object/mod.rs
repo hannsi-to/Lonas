@@ -6,10 +6,10 @@ pub(crate) mod instance_slots;
 mod stroke;
 #[cfg(test)]
 mod tests;
-pub(crate) mod topology;
+pub(crate) mod paint_type;
 
 pub use instance_slots::InstanceId;
-pub use topology::{Dash, JointType, Topology};
+pub use paint_type::{Dash, JointType, PaintType};
 
 use crate::config::{Blend, CullMode};
 use crate::draw::{CameraId, DrawManager2D, DrawManager3D};
@@ -20,7 +20,7 @@ use crate::memory::MemoryUpdateType;
 use crate::resource::{ShaderId, TextureId};
 use crate::vertex::Vertex;
 use core::{EndContext, ObjectCore};
-use topology::Winding;
+use paint_type::Winding;
 
 // 2D / 3D で共通のメソッド
 macro_rules! object_common {
@@ -66,7 +66,7 @@ macro_rules! object_common {
                 self
             }
 
-            // 以降の vertex() を、新しい形にする（§10 形の区切り）。どの分け方でも、形ごとに別々に三角形を作る
+            // 以降の vertex() を、新しい形にする（§10 形の区切り）。Fill でも Stroke でも、形ごとに別々に三角形を作る
             // index() を呼んだフレームでは使わない
             pub fn begin_shape(&mut self) -> &mut Self {
                 self.core.begin_shape();
@@ -74,7 +74,7 @@ macro_rules! object_common {
             }
 
             // 以降の vertex() を、次の begin_hole() か begin_shape() か end まで、今の形の 1 つの穴の輪郭にする（§10 穴のある多角形）
-            // Polygon は穴を空けて塗り、Stroke は穴の輪郭も描く。他の分け方では穴を使わない
+            // Fill は穴を空けて塗り、Stroke は穴の輪郭も描く
             pub fn begin_hole(&mut self) -> &mut Self {
                 self.core.begin_hole();
                 self
@@ -96,9 +96,9 @@ macro_rules! object_common {
             }
 
             // Stroke の line_width・Dash の値が不正なら panic（§10 線：Stroke）
-            pub fn topology(&mut self, topology: Topology) -> &mut Self {
-                topology.validate();
-                self.core.set("topology", |core| &mut core.topology, topology);
+            pub fn paint_type(&mut self, paint_type: PaintType) -> &mut Self {
+                paint_type.validate();
+                self.core.set("paint_type", |core| &mut core.paint_type, paint_type);
                 self
             }
 

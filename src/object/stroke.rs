@@ -4,7 +4,7 @@
 
 use std::f32::consts::PI;
 
-use super::topology::{self, Break, Dash, JointType};
+use super::paint_type::{self, Break, Dash, JointType};
 use crate::math::Vector2f;
 use crate::vertex::Vertex;
 
@@ -25,7 +25,7 @@ pub(crate) struct Mesh {
 pub(crate) fn tessellate(points: &[Vertex], breaks: &[Break], line_width: f32, joint: JointType, strip: bool, dash: Option<Dash>) -> Mesh {
     let mut builder = Builder { mesh: Mesh::default(), half: line_width * 0.5, joint };
 
-    for shape in topology::shapes(points.len(), breaks) {
+    for shape in paint_type::shapes(points.len(), breaks) {
         for ring in shape.rings() {
             builder.ring(&points[ring], strip, dash);
         }
@@ -313,7 +313,7 @@ fn lerp(a: &Vertex, b: &Vertex, t: f32) -> Vertex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::object::topology::Topology;
+    use crate::object::paint_type::PaintType;
 
     fn point(x: f32, y: f32) -> Vertex {
         Vertex::new_position_color(x, y, 0.0, 1.0, 1.0, 1.0, 1.0)
@@ -545,8 +545,8 @@ mod tests {
 
     #[test]
     fn invalid_settings_panic() {
-        let stroke = |line_width, dash| Topology::Stroke { line_width, joint_type: JointType::Miter, strip: true, dash };
-        let panics = |topology: Topology| std::panic::catch_unwind(|| topology.validate()).is_err();
+        let stroke = |line_width, dash| PaintType::Stroke { line_width, joint_type: JointType::Miter, strip: true, dash };
+        let panics = |paint_type: PaintType| std::panic::catch_unwind(|| paint_type.validate()).is_err();
         let dash = |length, gap, offset| Some(Dash { length, gap, offset });
 
         assert!(!panics(stroke(1.0, None)));

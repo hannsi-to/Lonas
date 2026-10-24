@@ -6,7 +6,7 @@ use lonas::lonas::{
     DrawManager2D, DrawManager3D, FilterMode, GpuContext, Handedness, Instance2D, Instance3D, InstanceId,
     LonasConfig, LonasError, Matrix4f, MemoryCapacity, MemoryConfig, MemoryUpdateType, MotionVectorFormat, Object2D,
     Object3D, Origin2D, PresentMode, ProjectionMode, Quaternion, ResourceManager, ShaderId, SurfaceDraw, SurfaceId, TaaConfig,
-    TextureAtlasConfig, TextureId, Topology, Vector2f, Vector3f, Vertex, VertexLayout, Visibility,
+    TextureAtlasConfig, TextureId, PaintType, Vector2f, Vector3f, Vertex, VertexLayout, Visibility,
 };
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::sync::Arc;
@@ -314,7 +314,7 @@ impl TestApplication {
         triangle
             .memory_update_type(MemoryUpdateType::Dynamic) // 頂点を毎フレーム動かす
             .shader(sprite_shader)
-            .topology(Topology::TriangleList)
+            .paint_type(PaintType::Fill)
             .blend(Blend::Alpha)
             .layer(1);
         // インスタンスが 0 個だと描かれないため、1 つ追加する（§10）
@@ -331,7 +331,7 @@ impl TestApplication {
             .memory_update_type(MemoryUpdateType::Static) // 四角形の頂点は変えない。インスタンスは常に Dynamic（§6）
             .shader(sprite_shader)
             .texture(player_texture)
-            .topology(Topology::TriangleFan)
+            .paint_type(PaintType::Fill)
             .blend(Blend::Alpha)
             .bounding_circle(Vector2f::new(16.0, 16.0), 23.0); // 任意。省略すると頂点から自動で計算（§10）
         let sprite_ids = (0..100)

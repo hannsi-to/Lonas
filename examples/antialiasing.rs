@@ -8,7 +8,7 @@ mod common;
 
 use lonas::lonas::{
     AntiAliasing, Camera3D, Color, CullMode, DrawManager3D, GpuContext, Instance3D, InstanceId, Matrix4f, MemoryUpdateType,
-    Object3D, ProjectionMode, Quaternion, ResourceManager, SurfaceDraw, SurfaceId, Topology, Vector3f, Vertex, VertexLayout, wgsl,
+    Object3D, ProjectionMode, Quaternion, ResourceManager, SurfaceDraw, SurfaceId, PaintType, Vector3f, Vertex, VertexLayout, wgsl,
 };
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
@@ -102,7 +102,7 @@ impl State {
         };
         let manager = DrawManager3D::new(&mut gpu, camera, VertexLayout::PositionColor);
         let mut blades = Object3D::new(&gpu);
-        blades.memory_update_type(MemoryUpdateType::Static).topology(Topology::TriangleList).shader(shader).cull_mode(CullMode::None);
+        blades.memory_update_type(MemoryUpdateType::Static).paint_type(PaintType::Fill).shader(shader).cull_mode(CullMode::None);
         let blade_ids = (0..24).map(|_| blades.add_instance(Instance3D::default())).collect();
 
         // 引数で最初の方式を選べる（例：cargo run --example antialiasing -- 4）

@@ -48,7 +48,7 @@ object.memory_update_type(MemoryUpdateType::Dynamic);
 object.shader(shader_id);
 object.texture(texture_id);
 object.blend(Blend::Alpha);
-object.topology(Topology::TriangleFan);
+object.paint_type(PaintType::Fill);
 object.layer(1); // Object2D のみ。任意
 object.cull_mode(CullMode::Back);
 object.uniform(...); // 高頻度で呼んでよい。同値なら無視（§11）
@@ -141,13 +141,13 @@ rock.end(&mut dm3d);  // そのフレームで begin していなければ panic
 | 頂点の数が変わった | `end` 時の書き込み位置と前の数を比べる | Static は **panic**、Dynamic は確保し直してすべてを転送（§6） |
 | インデックスの値が変わった（数は同じ） | `index` での比較 | 変わった位置の最小〜最大の範囲だけを転送 |
 | インデックスの数が変わった | 頂点と同じ | 頂点と同じ |
-| 自動で作るインデックスの作り直し | `index()` を呼んでいない `Object*` で、`topology` が変わった / 頂点の数が変わった / `Polygon` で頂点の位置が変わった（§10） | インデックスを作り直し、上の 2 行と同じく扱う。Static で数が変わる場合も **panic**（変えたい場合は先に `memory_update_type(Dynamic)` にする旨をメッセージで伝える） |
+| 自動で作るインデックスの作り直し | `index()` を呼んでいない `Object*` で、`paint_type` が変わった / 頂点の数が変わった / `Fill` で頂点の位置が変わった / 形・穴の区切りが変わった（§10） | インデックスを作り直し、上の 2 行と同じく扱う。Static で数が変わる場合も **panic**（変えたい場合は先に `memory_update_type(Dynamic)` にする旨をメッセージで伝える） |
 | `index()` を使う / 使わないが切り替わった | そのフレームで `index()` が呼ばれたか | インデックスの値・数の変化として扱う |
 | 頂点の位置が変わった | 頂点の比較 | 3D は `bounding_sphere`、2D は `bounding_circle` を指定していなければ計算し直す（2D は `culling_2d` が true のときのみ、§10） |
 | `memory_update_type` が変わった | 設定の比較（§3） | 新しい側の領域へ移す（§6 確保後の memory_update_type の変更） |
 | `shader` が変わった | 設定の比較 | 古いシェーダーの配列の要素を空きに戻し、新しいシェーダーの配列に要素を割り当てて書き込む（`DrawManager*` がその場で割り当てる、§6 uniform の領域）。全インスタンスの `uniform_index` を書き直す |
 | `texture` が変わった | 設定の比較 | 全インスタンスの `texture_slot` を書き直す（§11 TextureAtlas） |
-| `blend` / `cull_mode` / `camera` / `layer` / `topology`（`index()` 使用時）が変わった | 設定の比較 | 転送なし。積む描画コマンドの内容（パイプラインのキー・カメラ・描画順）が変わるだけ |
+| `blend` / `cull_mode` / `camera` / `layer` / `paint_type`（`index()` 使用時）が変わった | 設定の比較 | 転送なし。積む描画コマンドの内容（パイプラインのキー・カメラ・描画順）が変わるだけ |
 | uniform の値が変わった | バイト列の比較（§11 uniform） | その `Object*` の要素だけを転送 |
 | インスタンスの追加・更新・削除 | `InstanceSlots` の変更の範囲（§7） | 変わったスロットの最小〜最大の範囲だけを転送。容量を超えたら確保し直してすべてを転送 |
 | 使っている `CameraId` が無効 | `DrawManager*` の記録と比べる | **panic**（§11） |
@@ -280,7 +280,7 @@ struct ObjectCore<I> { // I = Instance2D / Instance3D
     texture: Option<TextureId>,               // None ならテクスチャ未指定の画素（§11 TextureAtlas）
     camera: Option<CameraId>,                 // None なら DrawManager の既定カメラ
     blend: Option<Blend>,
-    topology: Option<Topology>,
+    paint_type: Option<PaintType>,
     cull_mode: Option<CullMode>,
     memory_update_type: Option<MemoryUpdateType>, // None のまま end したら panic（§6）
     manager: Option<ManagerId>,               // 初回 end で紐づいた DrawManager
@@ -289,13 +289,13 @@ struct ObjectCore<I> { // I = Instance2D / Instance3D
     vertices: Vec<Vertex>,
     vertex_cursor: usize,                     // begin で 0 に戻す書き込み位置
     vertex_dirty: Option<Range<u32>>,         // そのフレームで変わった頂点の最小〜最大（§2）
-    positions_changed: bool,                  // 頂点の位置が変わったか（境界・Polygon のインデックスの作り直し、§10）
+    positions_changed: bool,                  // 頂点の位置が変わったか（境界・Fill のインデックスの作り直し、§10）
     elements_written: VertexElements,         // 頂点の要素をどこまで書いたか（§10 VertexLayout の警告）
-    indices: Vec<u32>,                        // index() を呼ばなければ topology から生成（§10）
+    indices: Vec<u32>,                        // index() を呼ばなければ paint_type から生成（§10）
     index_cursor: usize,
     index_dirty: Option<Range<u32>>,          // インデックスも同じ
     explicit_indices: bool,                   // そのフレームで index() を呼んだか（§2・§10）
-    generated_for: Option<(Topology, usize)>, // 最後に自動で作ったインデックスの元（topology と頂点数）
+    generated_for: Option<(PaintType, usize)>, // 最後に自動で作ったインデックスの元（paint_type と頂点数）
 
     instances: InstanceSlots<I>,              // §7
     texture_changed: bool,                    // テクスチャが変わったら全インスタンスの texture_slot を書き直す
@@ -953,7 +953,7 @@ gpu.end_frame(&mut resource_manager, &mut [
 | 別の `DrawManager*` の `CameraId` を使う | `Object*::end` で panic（§5） |
 | `memory_update_type()` を呼ばずに `end` | `Object*::end` で panic（§6） |
 | そのフレームで `begin` を呼ばずに `end` / 1 フレームに 2 回 `end` / 1 フレームに 2 回 `begin` | `Object*::end` / `Object*::begin` で panic（§2） |
-| Static の `Object*` で頂点・インデックスの数が変わる（`topology` の変更による自動のインデックスを含む） | `Object*::end` で panic（§2・§6） |
+| Static の `Object*` で頂点・インデックスの数が変わる（`paint_type` による自動のインデックス・`Stroke` が作る頂点を含む） | `Object*::end` で panic（§2・§6） |
 | 削除済みの `CameraId` を使う | panic（§11） |
 | 存在しない / 別の `Object*` の `InstanceId` を `update_instance` / `remove_instance` に渡す | panic（§11） |
 | 登録解除済みの `ShaderId` / `TextureId` を使う | `end_frame` で panic（§11 登録解除） |
@@ -962,7 +962,7 @@ gpu.end_frame(&mut resource_manager, &mut [
 | 同じサーフェスを `end_frame` の `SurfaceDraw` に 2 回以上渡す | `end_frame` で panic（§11 複数ウィンドウ） |
 | 別の `GpuContext` の、または取り除いた `SurfaceId` を渡す | その関数（`end_frame` を含む）で panic（§11 複数ウィンドウ） |
 | 存在しない `SurfaceId` を `resize` / `set_present_mode` / `set_anti_aliasing` / `end_frame` などに渡す | その関数で panic |
-| `index()` も `topology()` も呼ばずに `end` | `Object*::end` で panic（§10） |
+| `index()` も `paint_type()` も呼ばずに `end` | `Object*::end` で panic（§10） |
 | `DrawManager*` に積んだのに `end_frame` に渡さなかった | 次のフレームでその `DrawManager*` に `Object*::end` が呼ばれた時点で panic（前のフレームのコマンドが残っている） |
 
 - フレームの状態は `GpuContext` と各 `DrawManager*`・各 `Object*` で共有する **フレーム番号**（`Arc<AtomicU64>`）で判定する。フレーム中かどうかも同じ値に入れる（例：最下位ビット）。フレーム中かどうかに加え、`DrawManager*` に残っているコマンドがどのフレームのものかも分かる。`DrawManager*` が `GpuContext` を借用し続けずに済む
@@ -991,7 +991,7 @@ pub enum Blend {
 }
 ```
 
-- **プリミティブは三角形のみ**（`TriangleList`）。線・点は扱わない。四角形や多角形は `topology()` で三角形に分ける（下記）
+- **プリミティブは三角形のみ**（wgpu の `PrimitiveTopology::TriangleList`）。点は扱わない。多角形は `paint_type()` の `Fill` で三角形に分け、線は `Stroke` で三角形にする（下記）
 - `Alpha` / `Additive` を半透明として扱う（3D の描画順で使う）
 
 ### インデックス
@@ -1010,54 +1010,47 @@ object.end(&mut draw_manager);
 ```
 
 - インデックスは用途別メモリ空間のインデックス領域に置く（§6）
-- **決定：`index()` を一度も呼ばなかった `Object*` は、`topology()` で指定した分け方に従って Lonas がインデックスを自動で生成する（三角形化）。**
+- **決定：`index()` を一度も呼ばなかった `Object*` は、`paint_type()` で指定した塗り方に従って Lonas がインデックスを自動で生成する。**
   - これにより、すべての `Object*` をインデックス付きの描画として扱え、バッチングの引数が `indexed` に統一される
-  - `index()` を呼んだ場合はそちらを優先し、`topology()` は使わない
+  - `index()` を呼んだ場合はそちらを優先し、`paint_type()` は使わない
 
-### 三角形化：topology
+### 塗り方：PaintType
 
-GPU に送るプリミティブは常に三角形（`TriangleList`）のまま、**インデックスの作り方だけ** を `topology()` で選ぶ（`Stroke` だけは頂点も作る。下記の「線：Stroke」）。
+GPU に送るプリミティブは常に三角形のまま、**頂点をどう塗るか** を `paint_type()` で選ぶ。`Fill` はインデックスだけを作り、`Stroke` は頂点も作る（下記の「線：Stroke」）。
 「高頻度ではないが描画中でも呼ばれる」区分。
 
 ```rust
-pub enum Topology {
-    TriangleList,  // 3 つずつで 1 つの三角形
-    TriangleFan,   // 凸多角形の外周
-    TriangleStrip, // 帯状に続く三角形
-    Polygon,       // へこみのある多角形の外周
+pub enum PaintType {
+    Fill, // 頂点を外周とする多角形を塗る。へこみ・穴（begin_hole）があってもよい
     Stroke { line_width: f32, joint_type: JointType, strip: bool, dash: Option<Dash> }, // 太さのある線
 }
 
 impl Object2D { // Object3D も同じ
-    pub fn topology(&mut self, topology: Topology) -> &mut Self;
+    pub fn paint_type(&mut self, paint_type: PaintType) -> &mut Self;
 }
 ```
 
-| 指定 | 生成するインデックス | 作り直す時 |
+| 指定 | 生成するもの | 作り直す時 |
 |---|---|---|
-| `TriangleList` | 0,1,2, 3,4,5, … | 頂点数か形の区切りが変わった時 |
-| `TriangleFan` | 0,1,2, 0,2,3, 0,3,4, … | 頂点数か形の区切りが変わった時 |
-| `TriangleStrip` | 0,1,2, 2,1,3, 2,3,4, …（向きを揃えるため 1 つおきに入れ替える） | 頂点数か形の区切りが変わった時 |
-| `Polygon` | 単調多角形分割で分割（O(n log n)、下記）。穴も空けられる（下記の「穴のある多角形」） | 頂点の位置か穴の区切りが変わった時 |
-| `Stroke` | 頂点を線の中心として、線の頂点とインデックスを作る（下記） | 頂点（位置以外の要素を含む）・設定・頂点数のどれかが変わった時 |
+| `Fill` | 単調多角形分割で分けたインデックス（O(n log n)、下記）。穴も空けられる（下記の「穴のある多角形」） | 頂点の位置か頂点数か、形・穴の区切りが変わった時 |
+| `Stroke` | 頂点を線の中心として、線の頂点とインデックスを作る（下記） | 頂点（位置以外の要素を含む）・設定・頂点数・形と穴の区切りのどれかが変わった時 |
 
+- **決定：塗り方は `Fill` と `Stroke` の 2 つにする。**以前の `Topology`（`TriangleList` / `TriangleFan` / `TriangleStrip` / `Polygon` / `Stroke`）を `PaintType` に改め、`Polygon` を `Fill` にした
+  - 却下（削除）：`TriangleList` / `TriangleFan` / `TriangleStrip`。三角形・凸多角形・へこみのある多角形はどれも `Fill` で描ける。複数の形は `begin_shape()` で区切れる。三角形を自由に並べたい場合は `index()` で指定する
+  - 名前は「頂点をどう塗るか」を表すものにした（GPU の topology の用語ではなく、塗りつぶしと線の選択として扱う）
 - パイプラインもバッチングも変わらない（GPU 側は常に三角形）
-- `Stroke` の値を持つため、`Topology` は `Eq` / `Hash` を実装しない（`PartialEq` のみ）
-- `TriangleList` / `TriangleFan` / `TriangleStrip` は頂点数だけで決まるため、計算はほぼ不要で使い回せる
-- `Polygon` は頂点の位置が変わるたびに計算し直す必要がある（計算量 O(n log n)、下記）。形が頻繁に変わり、頂点数が多いものでは負担になる
-- `Polygon` は 2D の多角形（3D では 1 つの平面上にある多角形）を対象とする
+- `Stroke` の値を持つため、`PaintType` は `Eq` / `Hash` を実装しない（`PartialEq` のみ）
+- `Fill` は頂点の位置が変わるたびに計算し直す必要がある（計算量 O(n log n)、下記）。形が頻繁に変わり、頂点数が多いものでは負担になる
+- `Fill` は 2D の多角形（3D では 1 つの平面上にある多角形）を対象とする
 - 扱わないもの：自分と交差する多角形、点。線は `Stroke` で描く。穴は `begin_hole()` で空ける（下記）
-- **決定：頂点数が分け方に合わない場合、余った頂点を捨てて `log` で警告する。**
-  - `TriangleList` で 3 の倍数でない場合：最後の余り（1〜2 個）を三角形に含めない
-  - どの分け方でも頂点が 3 個未満の場合：何も描かない
-  - 警告は、頂点数が合わない状態になった時に 1 回だけ出す（毎フレーム出さない）
-- **決定：`index()` を呼ばず、`topology()` も一度も呼ばずに `end` した場合は panic。**`index()` を呼んでいる場合は `topology()` を使わないため、呼ばなくてよい
-- **決定：`Polygon` の頂点の向き（時計回り / 反時計回り）は自動で判定する。**符号付き面積で向きを求め、分割はその向きに合わせて行う。生成する三角形の向きは一定に揃える
+- **決定：外周の頂点が 3 個未満の形は描かず、`log` で警告する。**警告は、そうなった時に 1 回だけ出す（毎フレーム出さない）
+- **決定：`index()` を呼ばず、`paint_type()` も一度も呼ばずに `end` した場合は panic。**`index()` を呼んでいる場合は `paint_type()` を使わないため、呼ばなくてよい
+- **決定：`Fill` の頂点の向き（時計回り / 反時計回り）は自動で判定する。**符号付き面積で向きを求め、分割はその向きに合わせて行う。生成する三角形の向きは一定に揃える
   - **決定（段階 5）：2D は入力の向きによらず xy 平面で反時計回りに揃える。3D は入力の頂点の並びと同じ向きにする。**3D は多角形の平面がどちらを向くかで表裏が決まり、表にする側はユーザーが頂点の順で選ぶため
 
-#### Polygon の分割方法
+#### Fill の分割方法
 
-**決定：`Polygon` の三角形化は CPU で行い、単調多角形分割（monotone polygon decomposition）を使う。計算量は O(n log n)。**
+**決定：`Fill` の三角形化は CPU で行い、単調多角形分割（monotone polygon decomposition）を使う。計算量は O(n log n)。**
 
 - **段階 5 の実装：**走査線に交わる辺の一覧は配列で持ち、頂点の左の辺を線形に探す。計算量は並べ替えの O(n log n) と、走査線に同時に交わる辺の数 k に比例する O(n·k)。k は多くの形で小さいため、木構造（O(log n) で探せる）にするのは、遅さが問題になってから
 - 3D の多角形は、Newell の方法で求めた外周の法線の最も大きい軸を落として 2D にしてから分割する（穴も同じ軸を落とす）
@@ -1072,7 +1065,7 @@ impl Object2D { // Object3D も同じ
 
 #### 形の区切り
 
-**決定：`begin_shape()` で、以降の頂点を新しい形にする。**`begin`〜`end` の間で呼ぶ。どの分け方でも、形ごとに別々に三角形を作る。1 つの `Object*` のままなので、DrawCall は増えない。
+**決定：`begin_shape()` で、以降の頂点を新しい形にする。**`begin`〜`end` の間で呼ぶ。`Fill` でも `Stroke` でも、形ごとに別々に三角形を作る。1 つの `Object*` のままなので、DrawCall は増えない。
 
 ```rust
 impl Object2D { // Object3D も同じ
@@ -1086,20 +1079,17 @@ for p in triangle_b { object.vertex(p); }
 object.end(&mut manager);
 ```
 
-| 分け方 | 形ごとの作り方 |
+| 塗り方 | 形ごとの作り方 |
 |---|---|
-| `TriangleList` | 形ごとに 3 つずつ区切る。頂点の余りも形ごとに数える |
-| `TriangleFan` | 形ごとに別の扇形にする。中心は各形の最初の頂点 |
-| `TriangleStrip` | 形ごとに別の帯にする |
-| `Polygon` | 形ごとに別々に分割する（その形の穴を含む） |
+| `Fill` | 形ごとに別々に分割する（その形の穴を含む） |
 | `Stroke` | 形ごとに別の線にする。閉じた輪郭なら、それぞれを閉じる |
 | `index()` を呼んだ場合 | 区切りは使わない。インデックスは `Object*` 全体の頂点の番号 |
 
 - 名前は `begin_hole()` と対にした。`begin_shape()` は新しい形（外周）を、`begin_hole()` は今の形の中の穴を始める
 - 頂点の並びと頂点バッファは変えず、インデックスを作る時だけ区切る。そのため、その場で比較しながら書き込む方式（§1・§4）はそのまま使える
 - `begin_shape()` と `begin_hole()` の区切りは、呼んだ順に 1 つの一覧として持つ。区切りの位置が前のフレームと違えば、頂点が同じでもインデックスを作り直す
-- 外周の頂点が 3 個未満の形は描かない（頂点数が分け方に合わない場合と同じく、一度だけ警告する）。続けて呼んだ空の形も描かない
-- 却下案：`next_shape()`（`begin_hole()` と名前の形が揃わない）、`restart()` / `break_strip()`（GPU の primitive restart に近い名前だが、`Polygon` や `Stroke` になじまない）、`new_shape()`（新しいオブジェクトを作るように読める）
+- 外周の頂点が 3 個未満の形は描かない（そうなった時に一度だけ `log` で警告する）。続けて呼んだ空の形も描かない
+- 却下案：`next_shape()`（`begin_hole()` と名前の形が揃わない）、`restart()` / `break_strip()`（GPU の primitive restart に近い名前だが、`Fill` や `Stroke` になじまない）、`new_shape()`（新しいオブジェクトを作るように読める）
 
 #### 穴のある多角形
 
@@ -1124,12 +1114,11 @@ object.end(&mut manager);
 - 区切りの位置（`begin_hole()` を呼んだ時点の頂点数）が前のフレームと違えば、頂点が同じでもインデックスを作り直す
 - 形を `begin_shape()` で区切った場合は、形ごとに別々に分割する。穴は、その穴を始めた時点の形にだけ空く
 
-| 分け方 | 穴の扱い |
+| 塗り方 | 穴の扱い |
 |---|---|
-| `Polygon` | 穴を空けて塗る |
+| `Fill` | 穴を空けて塗る |
 | `Stroke`（閉じた輪郭） | 外周と、それぞれの穴の輪郭を閉じて描く。破線も輪ごとにかかる |
 | `Stroke`（開いた折れ線） | 輪ごとに、別々の開いた折れ線として描く |
-| `TriangleList` / `TriangleFan` / `TriangleStrip` | 穴は使わず、外周の頂点だけでインデックスを作る。`Object*` ごとに一度だけ `log` で警告する |
 | `index()` を呼んだ場合 | 区切りは使わない。穴の頂点も頂点バッファに入るため、インデックスから参照できる |
 
 - **決定：穴の向き（時計回り / 反時計回り）も自動で判定する。**外周と同じく符号付き面積で求める。生成する三角形の向きは外周で決まる（2D は反時計回り、3D は外周の入力の向き）
@@ -1139,7 +1128,7 @@ object.end(&mut manager);
 
 #### 線：Stroke
 
-**決定：`Topology::Stroke` で、頂点を線の中心として太さのある線を作る。**三角形化は CPU で行う（`object/stroke.rs`）。
+**決定：`PaintType::Stroke` で、頂点を線の中心として太さのある線を作る。**三角形化は CPU で行う（`object/stroke.rs`）。
 
 ```rust
 Stroke {
@@ -1166,14 +1155,14 @@ pub struct Dash {
 | `Round` | 外側の角を扇形で丸める | 平ら |
 | `RoundStart` / `RoundEnd` / `RoundStartEnd` | `Round` と同じ | 始点 / 終点 / 両端を半円で丸める |
 
-- **決定：`Stroke` だけは GPU に送る頂点を作る。**他の分け方はユーザーの頂点をそのまま送り、インデックスだけを作るが、線は太さの分だけ外側に頂点が要るため
-  - ユーザーが書いた頂点（線の中心の点）は、他の分け方と同じくその場で比較しながら写しに書く（§1・§4）
+- **決定：`Stroke` だけは GPU に送る頂点を作る。**`Fill` はユーザーの頂点をそのまま送り、インデックスだけを作るが、線は太さの分だけ外側に頂点が要るため
+  - ユーザーが書いた頂点（線の中心の点）は、`Fill` と同じくその場で比較しながら写しに書く（§1・§4）
   - 作った頂点は前のフレームに作ったものと比べ、変わった位置の最小〜最大だけを送る。点・設定・点の数が変わらなければ作り直さない
   - `Stroke` をやめたフレームでは、元の頂点をすべて送り直す
   - 境界（§10 視界の判定に使う大きさ）は、線の太さを含めて作った頂点から求める
   - Static の `Object*` では、作った頂点の数が変わると panic する（§6）。角の丸めの分割数・Miter から Bevel への切り替え・破線の本数は点の位置で変わるため、点を動かす線は Dynamic にする
 - **決定：線は頂点の xy 平面で広げ、z は頂点ごとの値を保つ。2D・3D とも同じ。**3D の線をどの平面で広げるかは、カメラか平面を決めないと定まらないため。3D で別の向きにしたい場合はインスタンスの変換で回す
-- **決定：作る三角形は xy 平面で反時計回りに揃える**（2D の `Polygon` と同じ）
+- **決定：作る三角形は xy 平面で反時計回りに揃える**（2D の `Fill` と同じ）
 - 色・UV・法線は元の頂点の値を写す。破線の切れ目にできる頂点は、辺の両端の値を線形に補間する
 - 角の内側では、2 本の辺の四角形が重なる。半透明の線では重なった部分が濃くなる
 - 位置が同じ点が続く場合は 1 つにまとめる。閉じた輪郭で最後の点が始点と同じなら、最後の点を捨てる。点が 2 個未満なら何も描かない。点が 2 個の閉じた輪郭は 1 本の線分として描く
@@ -1182,9 +1171,9 @@ pub struct Dash {
   - 破線の 1 本 1 本を短い開いた折れ線として扱う。破線の中の角は `joint_type` でつなぎ、端の丸め（`RoundStart` など）は各破線の端に付く（SVG の `stroke-linecap` と同じ考え方）
   - 閉じた輪郭では、始点をまたぐ破線を 1 本につなぐ（始点の角も `joint_type` でつながる）
   - 模様の位置は線に沿った長さで決まり、`offset` を変えると模様が線に沿って動く
-- **決定：`line_width` と `Dash` の値は `topology()` を呼んだ時に検査し、不正なら panic**（§3 設定の値の検査）。`line_width`・`length`・`gap` は 0 より大きい有限の値、`offset` は有限の値（負の値も使える）
+- **決定：`line_width` と `Dash` の値は `paint_type()` を呼んだ時に検査し、不正なら panic**（§3 設定の値の検査）。`line_width`・`length`・`gap` は 0 より大きい有限の値、`offset` は有限の値（負の値も使える）
 - `begin_shape()` で区切った形は、それぞれ別の線として描く。`begin_hole()` で区切った穴も、外周とは別の線として描く。閉じた輪郭（`strip: false`）なら外周と穴の輪郭をそれぞれ閉じて描き、開いた折れ線なら輪ごとに別の折れ線にする（下記の「穴のある多角形」）
-- `index()` を呼んだフレームは、他の分け方と同じく `topology()` を使わないため、`Stroke` も使わない（頂点をそのまま送る）
+- `index()` を呼んだフレームは、`Fill` と同じく `paint_type()` を使わないため、`Stroke` も使わない（頂点をそのまま送る）
 - 却下案：頂点シェーダーで線を広げる方法。描画の頂点の並びとシェーダーとの約束事（§11）が線のためだけに変わり、ユーザーのシェーダーに線の処理を書かせることになるため
 
 ### インスタンスが 0 個の Object
@@ -1870,11 +1859,11 @@ struct Camera {                              // 224 バイト
 
 ### 同値の設定の扱いと redundant_call_warning
 
-**決定：`shader()` 以外の設定（`texture` / `blend` / `topology` / `camera` / `layer` / `memory_update_type`）も、毎フレーム同じ値で呼ばれた場合は `shader()` と同じく無視して警告する。**
+**決定：`shader()` 以外の設定（`texture` / `blend` / `paint_type` / `camera` / `layer` / `memory_update_type`）も、毎フレーム同じ値で呼ばれた場合は `shader()` と同じく無視して警告する。**
 
 | 対象 | 同値の判定と無視 | 警告 |
 |---|---|---|
-| `shader` / `texture` / `blend` / `topology` / `camera` / `layer` / `memory_update_type` | 常に行う | `redundant_call_warning = true` のときのみ。毎フレームのログを避けるため、`Object*` ごと・設定の関数ごとに 1 回だけ（段階 5 で決定） |
+| `shader` / `texture` / `blend` / `paint_type` / `camera` / `layer` / `memory_update_type` | 常に行う | `redundant_call_warning = true` のときのみ。毎フレームのログを避けるため、`Object*` ごと・設定の関数ごとに 1 回だけ（段階 5 で決定） |
 | 頂点・インデックスのその場比較（§4） | 常に行う | 出さない（毎フレーム呼ぶ関数のため） |
 | uniform | 常に行う | 出さない（高頻度で呼ぶことを想定した関数のため） |
 
@@ -1962,7 +1951,7 @@ impl Object2D { // Object3D も同じ
 ```
 
 - `cull_mode` はパイプラインのキー（§10）に含める
-- **決定（段階 6）：画面上で反時計回りに見える面を表にする。**3D の右手系・2D の原点が `BottomLeft` / `Center` では反時計回り、3D の左手系・2D の原点が `TopLeft`（y が下向き）では時計回りの頂点の順を表にする（2D の `Polygon` は xy 平面で反時計回りに作るため、`TopLeft` では表になる）
+- **決定（段階 6）：画面上で反時計回りに見える面を表にする。**3D の右手系・2D の原点が `BottomLeft` / `Center` では反時計回り、3D の左手系・2D の原点が `TopLeft`（y が下向き）では時計回りの頂点の順を表にする（2D の `Fill` は xy 平面で反時計回りに作るため、`TopLeft` では表になる）
 
 ### 色
 

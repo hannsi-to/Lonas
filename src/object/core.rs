@@ -5,7 +5,7 @@ use std::ops::Range;
 
 use super::instance_slots::{InstanceData, InstanceSlots, ObjectId};
 use super::stroke;
-use super::topology::{self, Break, Topology, Winding};
+use super::paint_type::{self, Break, PaintType, Winding};
 use crate::config::{Blend, CullMode};
 use crate::draw::{CameraId, DrawCommand, DrawManagerCore, DrawSettings, DroppedRegions, HeapRequest, SpaceKind};
 use crate::gpu::GpuContext;
@@ -84,7 +84,7 @@ pub(crate) struct ObjectCore<I> {
     pub texture: Option<TextureId>,
     pub camera: Option<CameraId>,
     pub blend: Option<Blend>,
-    pub topology: Option<Topology>,
+    pub paint_type: Option<PaintType>,
     pub cull_mode: Option<CullMode>,
     pub memory_update_type: Option<MemoryUpdateType>,
     manager: Option<ManagerId>,
@@ -99,8 +99,8 @@ pub(crate) struct ObjectCore<I> {
     index_cursor: usize,
     index_dirty: Option<Range<u32>>,
     explicit_indices: bool,
-    // 最後に自動で作ったインデックスの元（topology と頂点数）。None は作っていない
-    generated_for: Option<(Topology, usize)>,
+    // 最後に自動で作ったインデックスの元（paint_type と頂点数）。None は作っていない
+    generated_for: Option<(PaintType, usize)>,
     // Stroke のときに GPU へ送る頂点。このとき vertices は線の中心の点になる（§10 線：Stroke）
     stroke_vertices: Vec<Vertex>,
     uses_stroke: bool,
@@ -158,7 +158,7 @@ impl<I: InstanceData> ObjectCore<I> {
             texture: None,
             camera: None,
             blend: None,
-            topology: None,
+            paint_type: None,
             cull_mode: None,
             memory_update_type: None,
             manager: None,
@@ -408,35 +408,25 @@ impl<I: InstanceData> ObjectCore<I> {
             return self.leave_stroke() || positions_changed;
         }
 
-        // index() を呼ばなければ topology から作る（§10 インデックス）
-        let topology = self.topology.expect("index() も topology() も呼ばずに Object の end が呼ばれました");
+        // index() を呼ばなければ paint_type から作る（§10 インデックス）
+        let paint_type = self.paint_type.expect("index() も paint_type() も呼ばずに Object の end が呼ばれました");
 
-        if let Topology::Stroke { .. } = topology {
-            return self.finish_stroke(topology, breaks_changed);
+        if let PaintType::Stroke { .. } = paint_type {
+            return self.finish_stroke(paint_type, breaks_changed);
         }
 
         let left_stroke = self.leave_stroke();
-        let key = (topology, self.vertices.len());
-        let needs_generation =
-            self.generated_for != Some(key) || breaks_changed || (topology == Topology::Polygon && positions_changed);
-
-        // 穴は Polygon と Stroke でだけ使う。他の分け方では各形の外周の頂点だけを使い、一度だけ警告する
-        let has_holes = self.breaks.iter().any(|b| matches!(b, Break::Hole(_)));
-
-        if has_holes && topology != Topology::Polygon && self.warned.insert("holes") {
-            log::warn!("begin_hole() の穴は Polygon と Stroke でだけ使います。{topology:?} では各形の外周の頂点だけを描きます");
-        }
+        let key = (paint_type, self.vertices.len());
+        // Fill は頂点の位置で分け方が変わる
+        let needs_generation = self.generated_for != Some(key) || breaks_changed || positions_changed;
 
         if needs_generation {
             let positions: Vec<Vector3f> = self.vertices.iter().map(|v| Vector3f::new(v.x, v.y, v.z)).collect();
-            let generated = topology::generate(topology, &positions, &self.breaks, self.winding);
+            let generated = paint_type::fill(&positions, &self.breaks, self.winding);
 
-            // 頂点数が合わない状態になった時に 1 回だけ警告する（§10）
+            // 描かない形がある状態になった時に 1 回だけ警告する（§10）
             if generated.has_leftover && !self.had_leftover {
-                log::warn!(
-                    "頂点数（{}）が {topology:?} の分け方に合いません。余った頂点は描きません",
-                    self.vertices.len(),
-                );
+                log::warn!("外周の頂点が 3 個未満の形があります。その形は描きません");
             }
 
             self.had_leftover = generated.has_leftover;
@@ -449,10 +439,10 @@ impl<I: InstanceData> ObjectCore<I> {
 
     // 線の中心の点から、GPU に送る頂点とインデックスを作る（§10 線：Stroke）
     // 点（位置以外の要素を含む）・設定・点の数・形と穴の区切りのどれかが変わった時だけ作り直し、前と違う位置だけを送る
-    fn finish_stroke(&mut self, topology: Topology, breaks_changed: bool) -> bool {
-        let Topology::Stroke { line_width, joint_type, strip, dash } = topology else { unreachable!() };
+    fn finish_stroke(&mut self, paint_type: PaintType, breaks_changed: bool) -> bool {
+        let PaintType::Stroke { line_width, joint_type, strip, dash } = paint_type else { unreachable!() };
         let entering = !self.uses_stroke;
-        let key = (topology, self.vertices.len());
+        let key = (paint_type, self.vertices.len());
 
         if !entering && !breaks_changed && self.vertex_dirty.is_none() && self.generated_for == Some(key) {
             return false;
@@ -530,7 +520,7 @@ impl<I: InstanceData> ObjectCore<I> {
             if size_changed && update == MemoryUpdateType::Static && !type_changed {
                 panic!(
                     "Static の Object の{}の数が変わりました（{} → {}）。数を変える場合は先に memory_update_type(Dynamic) にしてください",
-                    if space == SpaceKind::Index { "インデックス（topology の変更による自動のインデックスを含む）" } else { "頂点（Stroke が作る頂点を含む）" },
+                    if space == SpaceKind::Index { "インデックス（paint_type による自動のインデックスを含む）" } else { "頂点（Stroke が作る頂点を含む）" },
                     region.count,
                     count,
                 );

@@ -58,7 +58,7 @@ fn triangle(object: &mut Object2D, x: f32) {
 
 fn new_triangle(gpu: &GpuContext, update: MemoryUpdateType) -> Object2D {
     let mut object = Object2D::new(gpu);
-    object.memory_update_type(update).topology(Topology::TriangleList);
+    object.memory_update_type(update).paint_type(PaintType::Fill);
     object.add_instance(Instance2D::default());
     object
 }
@@ -161,7 +161,7 @@ fn only_changed_vertices_are_written() {
     object.vertex(Vertex::new_position_color(0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0));
     object.end(&mut manager);
     assert_eq!(writes(&manager, vertices), vec![(1, stride)]);
-    // TriangleList は頂点数が変わらなければインデックスを作り直さない
+    // Fill は位置が変わると作り直すが、三角形のつなぎ方が同じならインデックスは送らない
     assert!(writes(&manager, SpaceKind::Index).is_empty());
     end_frame(&mut gpu, &mut resources, &mut manager);
 }
@@ -197,8 +197,11 @@ fn heap_contents_match_cpu_copy_after_growth_and_compaction() {
 
         // Dynamic の頂点数を毎フレーム増やし、確保し直しと拡張を起こす
         dynamic.begin();
-        for i in 0..(3 + frame * 6) {
-            dynamic.vertex(Vertex::new_position_color(i as f32, frame as f32, 0.0, 0.5, 0.5, 0.5, 1.0));
+        // 円周上に並べ、どのフレームでも凸多角形にする
+        let count = 3 + frame * 6;
+        for i in 0..count {
+            let angle = std::f32::consts::TAU * i as f32 / count as f32;
+            dynamic.vertex(Vertex::new_position_color(10.0 * angle.cos(), 10.0 * angle.sin() + frame as f32, 0.0, 0.5, 0.5, 0.5, 1.0));
         }
         dynamic.end(&mut manager);
 
@@ -300,12 +303,12 @@ fn dropping_reclaimed_object_clears_the_record() {
 }
 
 #[test]
-fn indices_come_from_topology_or_index_calls() {
+fn indices_come_from_paint_type_or_index_calls() {
     let Some(mut gpu) = headless(sample_config()) else { return };
     let mut resources = ResourceManager::new();
     let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), VertexLayout::Position);
     let mut object = Object2D::new(&gpu);
-    object.memory_update_type(MemoryUpdateType::Dynamic).topology(Topology::TriangleFan);
+    object.memory_update_type(MemoryUpdateType::Dynamic).paint_type(PaintType::Fill);
     object.add_instance(Instance2D::default());
 
     gpu.begin_frame();
@@ -314,7 +317,11 @@ fn indices_come_from_topology_or_index_calls() {
         object.vertex(Vertex::new_position(x, y, 0.0));
     }
     object.end(&mut manager);
-    assert_eq!(object.core.index_values(), [0, 1, 2, 0, 2, 3]);
+    // Fill は正方形を三角形 2 つに分け、4 頂点をすべて使う
+    let mut used = object.core.index_values().to_vec();
+    used.sort_unstable();
+    used.dedup();
+    assert_eq!((object.core.index_values().len(), used), (6, vec![0, 1, 2, 3]));
     end_frame(&mut gpu, &mut resources, &mut manager);
 
     // index() を呼んだフレームはそちらを使う
@@ -384,29 +391,36 @@ fn indices_follow_shape_breaks() {
     let mut resources = ResourceManager::new();
     let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), VertexLayout::Position);
     let mut object = Object2D::new(&gpu);
-    object.memory_update_type(MemoryUpdateType::Dynamic).topology(Topology::TriangleFan);
+    object.memory_update_type(MemoryUpdateType::Dynamic).paint_type(PaintType::Fill);
     object.add_instance(Instance2D::default());
 
+    // 凸六角形。区切らなければ 1 つの形、3 頂点目で区切れば三角形 2 つ
+    let hexagon = [(0.0, 0.0), (2.0, 0.0), (3.0, 1.0), (2.0, 2.0), (0.0, 2.0), (-1.0, 1.0)];
     let draw = |gpu: &mut GpuContext, object: &mut Object2D, manager: &mut DrawManager2D, split: Option<usize>| {
         gpu.begin_frame();
         object.begin();
-        for i in 0..6 {
+        for (i, &(x, y)) in hexagon.iter().enumerate() {
             if Some(i) == split {
                 object.begin_shape();
             }
-            object.vertex(Vertex::new_position(i as f32, (i % 2) as f32, 0.0));
+            object.vertex(Vertex::new_position(x, y, 0.0));
         }
         object.end(manager);
     };
+    let sorted = |object: &Object2D| {
+        let mut indices: Vec<Vec<u32>> = object.core.index_values().chunks(3).map(|t| { let mut t = t.to_vec(); t.sort_unstable(); t }).collect();
+        indices.sort();
+        indices
+    };
 
-    // 区切らなければ 6 頂点の扇形（三角形 4 つ）
+    // 区切らなければ 6 頂点の 1 つの形（三角形 4 つ）
     draw(&mut gpu, &mut object, &mut manager, None);
-    assert_eq!(object.core.index_values(), [0, 1, 2, 0, 2, 3, 0, 3, 4, 0, 4, 5]);
+    assert_eq!(object.core.index_values().len(), 4 * 3);
     end_frame(&mut gpu, &mut resources, &mut manager);
 
-    // 3 頂点ずつに区切ると、2 つの扇形（三角形 2 つ）。頂点は送り直さない
+    // 3 頂点ずつに区切ると、三角形 2 つ。頂点は送り直さない
     draw(&mut gpu, &mut object, &mut manager, Some(3));
-    assert_eq!(object.core.index_values(), [0, 1, 2, 3, 4, 5]);
+    assert_eq!(sorted(&object), [vec![0, 1, 2], vec![3, 4, 5]]);
     assert!(!writes(&manager, SpaceKind::Index).is_empty());
     assert!(writes(&manager, SpaceKind::Vertex(VertexLayout::Position)).is_empty());
     end_frame(&mut gpu, &mut resources, &mut manager);
@@ -424,7 +438,7 @@ fn polygon_indices_follow_hole_boundaries() {
     let mut resources = ResourceManager::new();
     let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), VertexLayout::Position);
     let mut object = Object2D::new(&gpu);
-    object.memory_update_type(MemoryUpdateType::Dynamic).topology(Topology::Polygon);
+    object.memory_update_type(MemoryUpdateType::Dynamic).paint_type(PaintType::Fill);
     object.add_instance(Instance2D::default());
 
     // 外周 0〜10 の正方形と、穴 4〜6 の正方形。hole_start 個目の頂点から穴にする
@@ -468,9 +482,9 @@ fn stroke_uploads_generated_vertices_and_switches_back() {
     let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), layout);
     let vertices = SpaceKind::Vertex(layout);
     let stride = layout.stride() as u64;
-    let stroke = |line_width| Topology::Stroke { line_width, joint_type: crate::object::JointType::Miter, strip: true, dash: None };
+    let stroke = |line_width| PaintType::Stroke { line_width, joint_type: crate::object::JointType::Miter, strip: true, dash: None };
     let mut object = Object2D::new(&gpu);
-    object.memory_update_type(MemoryUpdateType::Dynamic).topology(stroke(2.0));
+    object.memory_update_type(MemoryUpdateType::Dynamic).paint_type(stroke(2.0));
     object.add_instance(Instance2D::default());
 
     // 直角に曲がる 3 点。辺の四角形 2 つ（頂点 8 個）と Miter の角（頂点 4 個）
@@ -514,14 +528,14 @@ fn stroke_uploads_generated_vertices_and_switches_back() {
     assert_eq!(read_back(&gpu, &object), expected(&object));
 
     // 太さを変えると位置がすべて変わるが、三角形のつなぎ方は同じなのでインデックスは送らない
-    object.topology(stroke(4.0));
+    object.paint_type(stroke(4.0));
     draw(&mut gpu, &mut object, &mut manager, 0.0);
     assert_eq!(writes(&manager, vertices), vec![(0, 12 * stride)]);
     assert!(writes(&manager, SpaceKind::Index).is_empty());
     end_frame(&mut gpu, &mut resources, &mut manager);
 
     // Stroke をやめたら、元の 3 頂点をすべて送り直す
-    object.topology(Topology::TriangleList);
+    object.paint_type(PaintType::Fill);
     draw(&mut gpu, &mut object, &mut manager, 0.0);
     assert_eq!(object.core.uploaded_vertices(), object.core.vertices());
     assert_eq!(writes(&manager, vertices), vec![(0, 3 * stride)]);
@@ -587,11 +601,11 @@ fn misuse_panics() {
     object.begin();
     assert!(panic_message(|| { object.end(&mut manager); }).contains("memory_update_type()"));
 
-    // index も topology も呼ばずに end
+    // index も paint_type も呼ばずに end
     let mut object = Object2D::new(&gpu);
     object.memory_update_type(MemoryUpdateType::Dynamic).begin();
     object.vertex(Vertex::new_position(0.0, 0.0, 0.0));
-    assert!(panic_message(|| { object.end(&mut manager); }).contains("index() も topology() も"));
+    assert!(panic_message(|| { object.end(&mut manager); }).contains("index() も paint_type() も"));
 
     // 別の DrawManager の CameraId
     let mut object = new_triangle(&gpu, MemoryUpdateType::Dynamic);
@@ -638,6 +652,7 @@ fn static_object_cannot_change_vertex_count() {
     gpu.begin_frame();
     object.begin();
     triangle(&mut object, 0.0);
+    object.begin_shape();
     triangle(&mut object, 5.0);
     assert!(panic_message(|| { object.end(&mut manager); }).contains("memory_update_type(Dynamic)"));
 }
@@ -648,7 +663,7 @@ fn draw_manager_3d_accepts_object_3d() {
     let mut resources = ResourceManager::new();
     let mut manager = DrawManager3D::new(&mut gpu, camera_3d(), VertexLayout::PositionColorUvNormal);
     let mut object = Object3D::new(&gpu);
-    object.memory_update_type(MemoryUpdateType::Static).topology(Topology::Polygon);
+    object.memory_update_type(MemoryUpdateType::Static).paint_type(PaintType::Fill);
     let id = object.add_instance(Instance3D::default());
 
     gpu.begin_frame();

@@ -8,7 +8,7 @@ mod common;
 use lonas::lonas::{
     Camera2D, Camera3D, Color, CullMode, DrawManager2D, DrawManager3D, GpuContext, Instance2D, Instance3D, InstanceId,
     Matrix4f, MemoryUpdateType, Object2D, Object3D, ProjectionMode, Quaternion, ResourceManager, SurfaceDraw, SurfaceId,
-    Topology, Vector2f, Vector3f, Vertex, VertexLayout, wgsl,
+    PaintType, Vector2f, Vector3f, Vertex, VertexLayout, wgsl,
 };
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -107,7 +107,7 @@ impl State {
         let mut triangle_2d = Object2D::new(&gpu);
         triangle_2d
             .memory_update_type(MemoryUpdateType::Static)
-            .topology(Topology::TriangleList)
+            .paint_type(PaintType::Fill)
             .shader(shader_2d)
             .cull_mode(CullMode::None);
         let instances_2d = (0..100)
@@ -123,7 +123,7 @@ impl State {
         let mut triangle_3d = Object3D::new(&gpu);
         triangle_3d
             .memory_update_type(MemoryUpdateType::Static)
-            .topology(Topology::TriangleList)
+            .paint_type(PaintType::Fill)
             .shader(shader_3d)
             .cull_mode(CullMode::None);
         let instance_3d = triangle_3d.add_instance(Instance3D::default());
