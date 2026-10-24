@@ -58,14 +58,40 @@ pub const GLYPH: &str = r#"
 struct GlyphRect {
     rect: vec4<f32>,
     layer: u32,
-    _reserved0: u32,
-    _reserved1: u32,
-    _reserved2: u32,
+    // Sdf / Msdf：距離の幅（画素）と 1 em の大きさ（画素）
+    distance_range: f32,
+    em_size: f32,
+    _reserved: u32,
 }
 
 // Bitmap：覆い率（0〜1）
 fn lonas_glyph_bitmap(atlas: texture_2d_array<f32>, atlas_sampler: sampler, rect: GlyphRect, uv: vec2<f32>) -> f32 {
     return textureSample(atlas, atlas_sampler, rect.rect.xy + uv * rect.rect.zw, rect.layer).r;
+}
+
+// 距離（画素、内側が正）を、画面上の 1 画素の幅でぼかして覆い率にする
+fn lonas_glyph_distance_coverage(value: f32, rect: GlyphRect, thickening: f32) -> f32 {
+    // 番号 0（塗りつぶし）は距離の幅を持たない。値は 1 のため内側
+    let range = select(rect.distance_range, 1.0, rect.distance_range == 0.0);
+    let distance = (value - 0.5) * range + thickening * rect.em_size;
+    let width = max(fwidth(distance), 1e-4);
+    return clamp(distance / width + 0.5, 0.0, 1.0);
+}
+
+// Sdf：1 チャンネルの距離。thickening は境目を外にずらす量（em、normal.y）
+fn lonas_glyph_sdf(atlas: texture_2d_array<f32>, atlas_sampler: sampler, rect: GlyphRect, uv: vec2<f32>, thickening: f32) -> f32 {
+    let value = textureSample(atlas, atlas_sampler, rect.rect.xy + uv * rect.rect.zw, rect.layer).r;
+    return lonas_glyph_distance_coverage(value, rect, thickening);
+}
+
+fn lonas_median(a: f32, b: f32, c: f32) -> f32 {
+    return max(min(a, b), min(max(a, b), c));
+}
+
+// Msdf：MTSDF の rgb の中央値で角を保つ。thickening は境目を外にずらす量（em、normal.y）
+fn lonas_glyph_msdf(atlas: texture_2d_array<f32>, atlas_sampler: sampler, rect: GlyphRect, uv: vec2<f32>, thickening: f32) -> f32 {
+    let sample = textureSample(atlas, atlas_sampler, rect.rect.xy + uv * rect.rect.zw, rect.layer);
+    return lonas_glyph_distance_coverage(lonas_median(sample.r, sample.g, sample.b), rect, thickening);
 }
 "#;
 
@@ -121,13 +147,20 @@ fn vs(@location(0) position: vec3<f32>, @location(1) color: vec4<f32>, @builtin(
 fn fs(in: LonasTextOut) -> @location(0) vec4<f32> {{ return in.color; }}
 "
         ),
-        // 頂点の色 × 覆い率。VertexLayout::PositionColorUvNormal で描く（normal.x がグリフの番号）
-        GlyphMethod::Bitmap { .. } => {
-            let (atlas, sampler, rects) = (bindings.glyph_atlas_r8, bindings.glyph_sampler, bindings.glyph_rects);
+        // 頂点の色 × 覆い率。VertexLayout::PositionColorUvNormal で描く（normal.x がグリフの番号、normal.y が太らせる量）
+        GlyphMethod::Bitmap { .. } | GlyphMethod::Sdf | GlyphMethod::Msdf => {
+            method.check_feature();
+
+            let (sampler, rects) = (bindings.glyph_sampler, bindings.glyph_rects);
+            let (atlas, coverage) = match method {
+                GlyphMethod::Msdf => (bindings.glyph_atlas_rgba, "lonas_glyph_msdf(glyph_atlas, glyph_sampler, glyph_rects[in.slot], in.uv, in.thickening)"),
+                GlyphMethod::Sdf => (bindings.glyph_atlas_r8, "lonas_glyph_sdf(glyph_atlas, glyph_sampler, glyph_rects[in.slot], in.uv, in.thickening)"),
+                _ => (bindings.glyph_atlas_r8, "lonas_glyph_bitmap(glyph_atlas, glyph_sampler, glyph_rects[in.slot], in.uv)"),
+            };
 
             format!(
                 "{common}{GLYPH}
-@group({}) @binding({}) var glyph_atlas_r8: texture_2d_array<f32>;
+@group({}) @binding({}) var glyph_atlas: texture_2d_array<f32>;
 @group({}) @binding({}) var glyph_sampler: sampler;
 @group({}) @binding({}) var<storage, read> glyph_rects: array<GlyphRect>;
 
@@ -136,6 +169,7 @@ struct LonasTextOut {{
     @location(0) color: vec4<f32>,
     @location(1) uv: vec2<f32>,
     @location(2) @interpolate(flat) slot: u32,
+    @location(3) thickening: f32,
 }}
 
 @vertex
@@ -148,12 +182,12 @@ fn vs(
 ) -> LonasTextOut {{
     let inst = instances[instance_order[index]];
     {world}
-    return LonasTextOut(camera.view_projection * world, color * inst.color, uv, u32(normal.x + 0.5));
+    return LonasTextOut(camera.view_projection * world, color * inst.color, uv, u32(normal.x + 0.5), normal.y);
 }}
 
 @fragment
 fn fs(in: LonasTextOut) -> @location(0) vec4<f32> {{
-    let coverage = lonas_glyph_bitmap(glyph_atlas_r8, glyph_sampler, glyph_rects[in.slot], in.uv);
+    let coverage = {coverage};
     return vec4(in.color.rgb, in.color.a * coverage);
 }}
 ",

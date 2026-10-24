@@ -20,14 +20,26 @@ pub enum YAxis {
     Up,
 }
 
-// 描き方（§13 描き方の選択）。Sdf / Msdf は段階 12 で足す
-#[non_exhaustive]
+// 描き方（§13 描き方の選択）
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum GlyphMethod {
     // 輪郭を三角形化する
     Vector,
     // 画面上の大きさでラスタライズした画素を、グリフのアトラスから読む。VertexLayout::PositionColorUvNormal・Blend::Alpha で描く
     Bitmap { hinting: Hinting },
+    // 1 チャンネルの符号付き距離（msdf feature）。Bitmap と同じく PositionColorUvNormal・Blend::Alpha で描く
+    Sdf,
+    // MTSDF（msdf feature）。Bitmap と同じく PositionColorUvNormal・Blend::Alpha で描く
+    Msdf,
+}
+
+impl GlyphMethod {
+    // Sdf / Msdf を msdf feature なしで使うと panic（§13 描き方の選択）
+    pub(crate) fn check_feature(self) {
+        if matches!(self, GlyphMethod::Sdf | GlyphMethod::Msdf) && !cfg!(feature = "msdf") {
+            panic!("GlyphMethod::{self:?} を使うには、lonas の msdf feature を有効にしてください");
+        }
+    }
 }
 
 // 書き込みの設定。変えても整形し直さない
@@ -123,6 +135,8 @@ pub fn write_text<T: TextObject>(object: &mut T, resources: &mut ResourceManager
         write.pixel_scale,
     );
 
+    write.method.check_feature();
+
     if layout.glyphs().iter().any(|glyph| glyph.style.shadow.is_some() || glyph.style.outline.is_some()) {
         object.check_effects();
     }
@@ -147,6 +161,7 @@ impl ResourceManager {
     // max_new_glyphs_per_frame の上限は受けない。Obfuscated で選ばれる字は種で決まるため、元の字だけを作る
     pub fn prepare_glyphs(&mut self, layout: &TextLayout, method: GlyphMethod, pixel_scale: f32) {
         assert!(pixel_scale.is_finite() && pixel_scale > 0.0, "pixel_scale は 0 より大きい有限の値にしてください（{pixel_scale}）");
+        method.check_feature();
 
         for glyph in layout.glyphs().iter().filter(|glyph| !glyph.style.hide_box) {
             match method {
@@ -165,6 +180,10 @@ impl ResourceManager {
                     if let Some(outline) = outline {
                         self.ensure_bitmap(outline, false);
                     }
+                }
+                // 太字・縁取りはシェーダーで作るため、字ごとに 1 つ
+                GlyphMethod::Sdf | GlyphMethod::Msdf => {
+                    self.ensure_bitmap(BitmapKey::distance(glyph.font, glyph.glyph_id, method == GlyphMethod::Msdf), false);
                 }
             }
         }
@@ -192,6 +211,8 @@ fn bitmap_keys(layout: &TextLayout, glyph: &PlacedGlyph, glyph_id: u32, pixel_sc
 }
 
 // アトラスの中のグリフの四角形（画素、原点からの位置。y は下向き）
+// scale は TextLayout の 1 単位あたりの画素（Bitmap は pixel_scale、Sdf / Msdf は sdf_em_size / size）
+// snap なら原点を画素の格子にそろえる（Bitmap だけ）。thickening は normal.y に入れる、境目を外にずらす量（em）
 #[derive(Copy, Clone)]
 struct GlyphQuad {
     slot: u32,
@@ -199,6 +220,9 @@ struct GlyphQuad {
     top: i32,
     width: u32,
     height: u32,
+    scale: f32,
+    snap: bool,
+    thickening: f32,
 }
 
 impl GlyphQuad {
@@ -206,7 +230,17 @@ impl GlyphQuad {
         let glyph = resources.bitmap_glyph(key);
         let raster = &glyph.raster;
 
-        Self { slot: glyph.slot, left: raster.left, top: raster.top, width: raster.width, height: raster.height }
+        Self { slot: glyph.slot, left: raster.left, top: raster.top, width: raster.width, height: raster.height, scale: 1.0, snap: false, thickening: 0.0 }
+    }
+
+    fn bitmap(resources: &ResourceManager, key: &BitmapKey, pixel_scale: f32) -> Self {
+        Self { scale: pixel_scale, snap: true, ..Self::of(resources, key) }
+    }
+
+    fn distance(resources: &ResourceManager, key: &BitmapKey, glyph: &PlacedGlyph, thickening: f32) -> Self {
+        let em_size = resources.text_config().sdf_em_size as f32;
+
+        Self { scale: em_size / glyph.size, thickening, ..Self::of(resources, key) }
     }
 }
 
@@ -237,9 +271,16 @@ impl Writer<'_> {
 
         let glyph_id = if style.obfuscated { obfuscated_glyph(resources, glyph, self.write.obfuscation_seed, index) } else { glyph.glyph_id };
 
-        if let GlyphMethod::Bitmap { hinting } = self.write.method {
-            self.bitmap_glyph(object, resources, glyph, glyph_id, hinting, color);
-            return;
+        match self.write.method {
+            GlyphMethod::Vector => {}
+            GlyphMethod::Bitmap { hinting } => {
+                self.bitmap_glyph(object, resources, glyph, glyph_id, hinting, color);
+                return;
+            }
+            GlyphMethod::Sdf | GlyphMethod::Msdf => {
+                self.distance_glyph(object, resources, glyph, glyph_id, color);
+                return;
+            }
         }
 
         let (body_key, outline_key) = shape_keys(self.layout, glyph, glyph_id, self.write.pixel_scale);
@@ -283,7 +324,6 @@ impl Writer<'_> {
 
     // Bitmap：影 → 縁取り → 字 の順に、アトラスの画素を指す四角形を書く（§13 Bitmap の書き込み）
     fn bitmap_glyph<T: TextObject>(&self, object: &mut T, resources: &mut ResourceManager, glyph: &PlacedGlyph, glyph_id: u32, hinting: Hinting, color: Color) {
-        let style = glyph.style;
         let (body_key, outline_key) = bitmap_keys(self.layout, glyph, glyph_id, self.write.pixel_scale, hinting);
 
         // 上限で作れない画素があれば、このフレームはそのグリフを書かない
@@ -296,8 +336,34 @@ impl Writer<'_> {
             return;
         }
 
-        let body = GlyphQuad::of(resources, &body_key);
-        let outline = outline_key.map(|key| GlyphQuad::of(resources, &key));
+        let scale = self.write.pixel_scale;
+        let body = GlyphQuad::bitmap(resources, &body_key, scale);
+        let outline = outline_key.map(|key| GlyphQuad::bitmap(resources, &key, scale));
+
+        self.glyph_quads(object, glyph, body, outline, color);
+    }
+
+    // Sdf / Msdf：字ごとに 1 つの距離の場から、太字・縁取りを normal.y で作る（§13 グリフの作り方）
+    fn distance_glyph<T: TextObject>(&self, object: &mut T, resources: &mut ResourceManager, glyph: &PlacedGlyph, glyph_id: u32, color: Color) {
+        let key = BitmapKey::distance(glyph.font, glyph_id, self.write.method == GlyphMethod::Msdf);
+
+        if !resources.ensure_bitmap(key, true) {
+            return;
+        }
+
+        let style = glyph.style;
+        let bold = if style.synthetic_bold { self.layout.bold_weight() } else { 0.0 };
+        let body = GlyphQuad::distance(resources, &key, glyph, resources.clamp_thickening(bold));
+        // 縁取りは同じ四角形を、太字と縁取りの分だけ太らせて字の後ろに書く
+        let outline =
+            style.outline.map(|_| GlyphQuad::distance(resources, &key, glyph, resources.clamp_thickening(bold + self.layout.outline_width())));
+
+        self.glyph_quads(object, glyph, body, outline, color);
+    }
+
+    // 影 → 縁取り → 字 の順に四角形を書く（Bitmap / Sdf / Msdf で共通）
+    fn glyph_quads<T: TextObject>(&self, object: &mut T, glyph: &PlacedGlyph, body: GlyphQuad, outline: Option<GlyphQuad>, color: Color) {
+        let style = glyph.style;
         let (x, y, italic) = (glyph.position.x, glyph.position.y, style.synthetic_italic);
 
         if let Some(shadow) = style.shadow {
@@ -321,16 +387,21 @@ impl Writer<'_> {
         self.quad(object, body, x, y, italic, color);
     }
 
-    // グリフの原点（TextLayout の座標）を書き込む座標で 1 / pixel_scale の格子に丸め、画素の位置だけずらした四角形を書く
-    // uv は左上が (0, 0)。normal.x はグリフの番号
+    // グリフの原点（TextLayout の座標）から、画素の位置だけずらした四角形を書く。Bitmap は原点を 1 / pixel_scale の格子に丸める
+    // uv は左上が (0, 0)。normal.x はグリフの番号、normal.y は境目を外にずらす量（em）
     fn quad<T: TextObject>(&self, object: &mut T, quad: GlyphQuad, origin_x: f32, origin_y: f32, italic: f32, color: Color) {
         if quad.slot == 0 {
             return;
         }
 
-        let scale = self.write.pixel_scale;
+        let scale = quad.scale;
         let origin = self.vertex(origin_x, origin_y, color);
-        let (snapped_x, snapped_y) = ((origin.x * scale).round() / scale, (origin.y * scale).round() / scale);
+        let (snapped_x, snapped_y) = if quad.snap {
+            let pixel = self.write.pixel_scale;
+            ((origin.x * pixel).round() / pixel, (origin.y * pixel).round() / pixel)
+        } else {
+            (origin.x, origin.y)
+        };
         let (left, top) = (quad.left as f32, quad.top as f32);
         let (right, bottom) = (left + quad.width as f32, top + quad.height as f32);
         let corners = [(left, top, 0.0, 0.0), (right, top, 1.0, 0.0), (right, bottom, 1.0, 1.0), (left, bottom, 0.0, 1.0)];
@@ -343,7 +414,7 @@ impl Writer<'_> {
                 YAxis::Up => snapped_y - layout_y,
             };
 
-            Vertex { x: snapped_x + layout_x, y: vertex_y, u, v, n_x: quad.slot as f32, ..origin }
+            Vertex { x: snapped_x + layout_x, y: vertex_y, u, v, n_x: quad.slot as f32, n_y: quad.thickening, ..origin }
         });
 
         write_counter_clockwise(object, &vertices, &[0, 1, 2, 0, 2, 3]);

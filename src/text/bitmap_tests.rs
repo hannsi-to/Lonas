@@ -133,7 +133,7 @@ fn rendered_pixels_follow_the_coverage() {
         for x in 0..SIZE as i32 {
             let (inner_x, inner_y) = (x - origin_x, y - origin_y);
             let coverage = if (0..raster.width as i32).contains(&inner_x) && (0..raster.height as i32).contains(&inner_y) {
-                raster.coverage[(inner_y * raster.width as i32 + inner_x) as usize]
+                raster.pixels[(inner_y * raster.width as i32 + inner_x) as usize]
             } else {
                 0
             };
@@ -261,7 +261,7 @@ fn light_hinting_keeps_advances_and_snaps_horizontal_edges() {
     let partial_rows = |raster: &super::bitmap::RasterGlyph| {
         (0..raster.height)
             .filter(|&y| {
-                let row = &raster.coverage[(y * raster.width) as usize..((y + 1) * raster.width) as usize];
+                let row = &raster.pixels[(y * raster.width) as usize..((y + 1) * raster.width) as usize];
                 let max = row.iter().copied().max().unwrap_or(0);
                 max > 0 && max < 200
             })

@@ -9,6 +9,7 @@ harfrust = { version = "0.15", optional = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"], optional = true }
 log = "0.4.34"
 lyon_tessellation = { version = "1.0.23", optional = true }
+fdsm = { version = "0.8.0", optional = true }
 naga = { version = "30", features = ["wgsl-in"] }
 pollster = "1.0.1"
 raw-window-handle = "0.6"
@@ -23,6 +24,8 @@ default = ["image", "text"]
 image = ["dep:image"]
 # テキストの整形と描画（§13 Cargo の feature）。外すと ResourceConfig に text の項目がなくなる
 text = ["dep:harfrust", "dep:skrifa", "dep:unicode-linebreak", "dep:lyon_tessellation", "dep:zeno"]
+# Sdf / Msdf（§13 Cargo の feature）。fdsm と、その画像の型のための image（register_texture は image feature のまま）
+msdf = ["text", "dep:fdsm", "dep:image"]
 
 [dev-dependencies]
 winit = "0.30"
@@ -41,3 +44,8 @@ required-features = ["text"]
 [[example]]
 name = "text_bitmap"
 required-features = ["text"]
+
+# Sdf / Msdf を使う
+[[example]]
+name = "text_sdf"
+required-features = ["msdf"]

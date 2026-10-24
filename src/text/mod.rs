@@ -1,11 +1,12 @@
 // テキスト（§13）。text feature
 // フォントの登録・整形（TextLayout）・ベクターの書き込み（write_text）
-#![allow(dead_code)] // TextConfig の SDF の値は段階 12 で使う
 
 pub(crate) mod bitmap;
 mod font;
 pub mod format;
 mod layout;
+#[cfg(feature = "msdf")]
+mod sdf;
 pub(crate) mod vector;
 mod write;
 
@@ -57,3 +58,6 @@ mod write_tests;
 
 #[cfg(test)]
 mod bitmap_tests;
+
+#[cfg(test)]
+mod sdf_tests;

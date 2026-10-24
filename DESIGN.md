@@ -2280,7 +2280,7 @@ gpu.set_anti_aliasing(surface_id, AntiAliasing::Taa)?;
 
 - **決定：整形は HarfRust で行う。**合字・カーニング・複雑な文字体系を自前で扱わない
 - **決定：グリフは使った文字だけをその場で作り、キャッシュする。**日本語のように文字の数が多いと、前もってすべてを作れないため
-- SDF / MSDF は msdfgen で作る（Cargo の feature は下記）
+- SDF / MSDF は fdsm（msdfgen を Rust で書き直したもの）で作る（Cargo の feature は下記。段階 12 で msdfgen から変更）
 
 ### フォントの登録
 
@@ -2632,12 +2632,20 @@ pub struct FontFamily {
 
 ### Cargo の feature
 
-**決定：テキストの依存は `text` feature にまとめ、既定で有効にする。msdfgen は別の `msdf` feature にし、既定で無効にする。**
+**決定：テキストの依存は `text` feature にまとめ、既定で有効にする。SDF / MSDF を作る fdsm は別の `msdf` feature にし、既定で無効にする。**
 
 | feature | 依存 | 既定 |
 |---|---|---|
 | `text` | harfrust・skrifa・lyon_tessellation・unicode-linebreak・zeno | 有効（`image` と同じ） |
-| `msdf` | msdfgen（C++。ビルドに C++ のコンパイラが要る） | 無効 |
+| `msdf` | fdsm（`text` を含む。fdsm は nalgebra・image に依存する） | 無効 |
+
+**決定（段階 12）：SDF / MSDF は fdsm で作る。msdfgen（C++）は使わない。**
+
+- fdsm は Rust だけで書かれ（MIT）、SDF・MSDF・MTSDF、誤りの補正、塗りの規則（nonzero）による符号の補正を持つ。C++ のコンパイラが要らず、Windows / Linux の CI でそのままビルドできる
+- `msdf` feature を既定で無効にしたままにするのは、nalgebra などの依存とコンパイルの時間を、使う人だけが負うため
+- fdsm の輪郭の読み込み（`fdsm-skrifa`）は古い skrifa に依存するため使わない。skrifa から取り出した輪郭（ベクター・Bitmap と同じもの）を fdsm の形に組み立てる
+- 却下案：msdfgen の既存のバインディング（`msdfgen-sys` 0.2.1）。Windows 用の生成済みのバインディングがなく、bindgen（libclang）と C++ のビルドが要る
+- 却下案：msdfgen への自前の FFI。C++ のソースと C のラッパーを持つ必要があり、手間とビルドの要件が増える
 
 ### 描き方の選択
 
@@ -2653,7 +2661,7 @@ pub enum GlyphMethod {
 ```
 
 - 描き方ごとに使うシェーダーが違う（下記）。描き方を変えたら `Object*` のシェーダーも変える
-- `Sdf` / `Msdf` を `msdf` feature なしで使うと panic（誤用）。列挙子は feature によらず残し、`TextWrite` の形を変えない
+- `Sdf` / `Msdf` を `msdf` feature なしで使うと panic（誤用）。列挙子は feature によらず残し、`TextWrite` の形を変えない（`write_text`・`prepare_glyphs`・`text_shader` のどれでも panic）
 
 ### グリフのアトラス
 
@@ -2708,7 +2716,7 @@ normal.z = 0
 | 描き方 | 作る場所 | キャッシュのキー | 太字・縁取り |
 |---|---|---|---|
 | `Bitmap` | zeno で、画面上の大きさ（`size × pixel_scale` を整数の画素に丸めた値）でラスタライズする | `(FontId, グリフ, 画素の大きさ, ヒンティング, 合成の太字, 縁取り)` | ベクターと同じく、ずらした複製を 1 つのパスにまとめ、nonzero で塗る |
-| `Sdf` / `Msdf` | msdfgen で `sdf_em_size` の大きさで作る | `(FontId, グリフ)` | シェーダーで境目を `normal.y` だけ外にずらす。縁取りは、`outline_width` だけ大きくした四角形を字の後ろに書き、縁取りの色を頂点の色に入れる |
+| `Sdf` / `Msdf` | fdsm で `sdf_em_size` の大きさで作る | `(FontId, グリフ)` | シェーダーで境目を `normal.y` だけ外にずらす。縁取りは、同じ四角形を `normal.y` を縁取りの分だけ大きくして字の後ろに書き、縁取りの色を頂点の色に入れる |
 
 - **決定：グリフの画素は、キャッシュにないものを `write_text` の中で（CPU で）作る。**転送は `end_frame` でテクスチャと同じ経路を使う
   - 初めて出てくる字が多いフレーム（日本語の長い文章など）は、そのフレームの `write_text` が重くなる
@@ -2718,6 +2726,16 @@ normal.z = 0
 - `Bitmap` は字の左上を画素の格子にそろえる（`pixel_scale` で画素の大きさを求める）。ぼやけないようにするため。画素より細かい位置に応じた作り分けはしない
 - `Bitmap` は画面上の大きさで作るため、拡大・縮小・3D の斜めからの表示には向かない。その用途には `Sdf` / `Msdf` か `Vector` を使う
 - `Sdf` / `Msdf` で太らせる量（`bold_weight`・`outline_width`）が `sdf_range` で表せる量を超えたら、表せる量に切り詰め、一度だけ `log` で警告する
+
+#### Sdf / Msdf の細部（段階 12 で決めたこと）
+
+- **距離の幅：**画素の値 0〜1 が距離 `−sdf_range / 2`〜`+sdf_range / 2`（画素、内側が正）を表す（fdsm・msdfgen と同じ）。そのため太らせられる量（太字 + 縁取り）の上限は `sdf_range / 2 / sdf_em_size`（em）
+- **大きさ：**グリフの輪郭の外接矩形を `sdf_em_size` 倍し、上下左右に `ceil(sdf_range / 2)` 画素の余白を足した大きさで作る。太らせた境目もこの範囲に収まるため、縁取りも字と同じ四角形で書く
+- `Sdf` は `R8Unorm`（1 チャンネルの距離）、`Msdf` は `Rgba8Unorm` の MTSDF（rgb が多チャンネル、a が通常の距離）。`Msdf` は fdsm の誤りの補正（`correct_error_mtsdf`）をかける。どちらも nonzero で符号を補正する（重なった輪郭のため）
+- **グリフの番号は `Bitmap` と同じ表・同じ番号の発行元を使う。**番号ごとに、どちらのフォーマットのアトラスに置いたかが決まる。番号 0（塗りつぶしの領域）は、`R8Unorm` と `Rgba8Unorm` の両方の同じ位置に置き、どちらから読んでも内側（距離が最大）になる
+- `GlyphRect` の予約のうち 2 つを使う：`distance_range: f32`（`sdf_range`）・`em_size: f32`（`sdf_em_size`）。シェーダーは距離を画素に直し、`normal.y × em_size` を足してから、`fwidth` でぼかす
+- 四角形は画素の格子にそろえない（拡大・縮小する前提のため）。`uv`・`normal.x`・`Italic`・`Shadow`・`HideBox`・線の扱いは `Bitmap` と同じ
+- `Msdf` は多チャンネルの中央値（median）で角を保つ。太らせる量が大きいと角が丸くなりにくいことがある（msdfgen と同じ性質）
 - `Italic`・`Shadow`・`Obfuscated` はベクターと同じく、書き込む時に四角形をずらす・傾ける・差し替える
 
 #### 満杯の時：追い出し
@@ -2744,7 +2762,7 @@ normal.z = 0
 
 - `ResourceManager` は、そのフレームに新しく作ったグリフと、追い出されていたのに使ったグリフの番号を溜める。`GpuContext` はそれを取り出して置き、置き場所がなければ追い出す（追い出したことを `ResourceManager` に知らせる）
 - 追い出す候補は、そのフレームに使わなかった（最後に使ったフレームが今のフレームより前の）グリフ。最後に使ったフレームが古い順に、置けるまで追い出す
-- グリフの番号の表（`glyph_rects`）の要素は `TextureRect` と同じ 32 バイト（`rect: vec4<f32>`・`layer: u32`・予約 3 つ）。予約は段階 12（Sdf / Msdf）で使う
+- グリフの番号の表（`glyph_rects`）の要素は `TextureRect` と同じ 32 バイト（`rect: vec4<f32>`・`layer: u32`・予約 3 つ）。予約のうち 2 つは段階 12 で `distance_range`・`em_size` にした（下記の「Sdf / Msdf の細部」）
 - 余白は 0（覆い率 0・内側から遠い）で埋める。番号 0 の塗りつぶしの領域だけは、余白も 1 で埋める（どこを読んでも 1 になる）
 - **注意：棚方式のため、追い出しても置けないことがある。**追い出したグリフの場所は、その棚の高さ・空いた幅に収まるグリフにしか使えない（§11 詰め込み方）。そのフレームに使わないグリフをすべて追い出しても置けなければ panic する。大きさの違う字を多く使う場合は、`glyph_atlas` の `size` か `max_layers` に余裕を持たせる
 

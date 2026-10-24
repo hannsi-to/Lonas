@@ -11,13 +11,26 @@ use bytemuck::{Pod, Zeroable};
 use super::packer::{Placement, ShelfPacker};
 use crate::config::LonasConfig;
 
-// WGSL の GlyphRect（32 バイト、§13 グリフの番号と、追い出した後）。予約の 3 つは段階 12 で使う
+// Sdf / Msdf の距離の幅と 1 em の大きさ。text feature を外すと使わないため、ここで同じ形を持つ
+#[cfg(feature = "text")]
+use crate::text::bitmap::DistanceSettings;
+#[cfg(not(feature = "text"))]
+#[derive(Copy, Clone)]
+struct DistanceSettings {
+    range: f32,
+    em_size: u32,
+}
+
+// WGSL の GlyphRect（32 バイト、§13 グリフの番号と、追い出した後・Sdf / Msdf の細部）
+// distance_range・em_size は Sdf / Msdf のときだけ使う（Bitmap では 0）
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default, PartialEq, Pod, Zeroable)]
 pub(crate) struct GpuGlyphRect {
     pub rect: [f32; 4],
     pub layer: u32,
-    pub _reserved: [u32; 3],
+    pub distance_range: f32,
+    pub em_size: f32,
+    pub _reserved: u32,
 }
 
 const _: () = assert!(size_of::<GpuGlyphRect>() == crate::wgsl::GLYPH_RECT_SIZE as usize);
@@ -193,10 +206,14 @@ impl GlyphAtlas {
             growth_factor: config.dynamic_growth_factor,
         };
 
-        // 番号 0 は塗りつぶしの領域。余白も 1 で埋め、どこを読んでも 1 になる（§13 頂点からの参照）
+        // 番号 0 は塗りつぶしの領域。余白も 1 で埋め、どこを読んでも 1（距離は内側の最大）になる（§13 頂点からの参照）
+        // R8Unorm と Rgba8Unorm の両方の同じ位置に置き、Msdf のシェーダーが読んでも同じ範囲になるようにする
         let placement = atlas.r8.packing.try_place(0, 1, 1).expect("空のアトラスに 1 画素を置けません");
+        let rgba_placement = atlas.rgba.packing.try_place(0, 1, 1).expect("空のアトラスに 1 画素を置けません");
+        assert_eq!(placement, rgba_placement, "2 つのアトラスで番号 0 の位置が食い違いました");
         atlas.r8.write(queue, &placement, &[255], 255);
-        atlas.set_rect(device, queue, 0, &placement);
+        atlas.rgba.write(queue, &rgba_placement, &[255; 4], 255);
+        atlas.set_rect(device, queue, 0, &placement, None);
 
         atlas
     }
@@ -220,29 +237,33 @@ impl GlyphAtlas {
     // end_frame の「2. リソースの反映」：登録を解除したフォントのグリフを外し、新しいグリフと追い出されていたグリフを置く
     #[cfg(feature = "text")]
     pub(crate) fn apply(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, cache: &mut crate::text::bitmap::BitmapCache, frame: u64) {
+        // 番号はどちらか一方のアトラスにだけ置かれている
         for slot in cache.take_removals() {
             self.r8.packing.remove(slot);
+            self.rgba.packing.remove(slot);
         }
 
         for slot in cache.take_uploads() {
             let Some(glyph) = cache.glyph(slot) else { continue };
+            let (width, height, distance) = (glyph.raster.width, glyph.raster.height, glyph.raster.distance);
+            let growth_factor = self.growth_factor;
+            // Bitmap・Sdf は R8Unorm、Msdf は Rgba8Unorm（§13 グリフのアトラス）
+            let texture = if glyph.raster.bytes_per_pixel == 4 { &mut self.rgba } else { &mut self.r8 };
 
-            if self.r8.packing.placement(slot).is_some() {
+            if texture.packing.placement(slot).is_some() {
                 cache.set_resident(slot, true);
                 continue;
             }
 
-            let (width, height) = (glyph.raster.width, glyph.raster.height);
-            let placement = match self.r8.packing.try_place(slot, width, height) {
+            let placement = match texture.packing.try_place(slot, width, height) {
                 Some(placement) => placement,
-                None if self.r8.packing.can_grow() => {
-                    self.r8.add_layers(device, queue, self.growth_factor);
-                    self.r8.packing.try_place(slot, width, height).expect("レイヤーを増やした後もグリフを置けません")
+                None if texture.packing.can_grow() => {
+                    texture.add_layers(device, queue, growth_factor);
+                    texture.packing.try_place(slot, width, height).expect("レイヤーを増やした後もグリフを置けません")
                 }
                 None => {
                     // そのフレームに使わなかったグリフを、最後に使ったフレームが古い順に追い出す（§13 満杯の時）
-                    let mut candidates: Vec<(u64, u32)> = self
-                        .r8
+                    let mut candidates: Vec<(u64, u32)> = texture
                         .packing
                         .placed()
                         .filter(|&(placed, _)| placed != 0)
@@ -252,7 +273,7 @@ impl GlyphAtlas {
                     candidates.sort_unstable();
                     let candidates: Vec<u32> = candidates.into_iter().map(|(_, placed)| placed).collect();
 
-                    let (placement, evicted) = self.r8.packing.place_evicting(slot, width, height, &candidates).unwrap_or_else(|| {
+                    let (placement, evicted) = texture.packing.place_evicting(slot, width, height, &candidates).unwrap_or_else(|| {
                         panic!(
                             "そのフレームに使うグリフだけでグリフのアトラスが溢れました。LonasConfig::glyph_atlas の size か max_layers を増やしてください"
                         )
@@ -267,19 +288,23 @@ impl GlyphAtlas {
             };
 
             let glyph = cache.glyph(slot).expect("置いている途中のグリフです");
-            self.r8.write(queue, &placement, &glyph.raster.coverage, 0);
-            self.set_rect(device, queue, slot, &placement);
+            // 余白は 0（覆い率 0・距離は外側の最大）
+            texture.write(queue, &placement, &glyph.raster.pixels, 0);
+            self.set_rect(device, queue, slot, &placement, distance);
             cache.set_resident(slot, true);
         }
     }
 
     // 余白を含まない範囲の UV。表を大きくする時は、すべての番号を書き直す
-    fn set_rect(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, slot: u32, placement: &Placement) {
+    #[cfg_attr(not(feature = "text"), allow(unused_variables))]
+    fn set_rect(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, slot: u32, placement: &Placement, distance: Option<DistanceSettings>) {
         let size = self.r8.size as f32;
         let rect = GpuGlyphRect {
             rect: [placement.inner_x as f32 / size, placement.inner_y as f32 / size, placement.width as f32 / size, placement.height as f32 / size],
             layer: placement.layer,
-            _reserved: [0; 3],
+            distance_range: distance.map_or(0.0, |distance| distance.range),
+            em_size: distance.map_or(0.0, |distance| distance.em_size as f32),
+            _reserved: 0,
         };
         let index = slot as usize;
 

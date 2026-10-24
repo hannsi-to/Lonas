@@ -1,5 +1,6 @@
-// Bitmap：画面上の大きさでラスタライズしたグリフ（§13 グリフのアトラス・グリフの作り方・ヒンティング）
-// 画素（覆い率、1 画素 1 バイト）は ResourceManager が持ち、アトラス上の配置は end_frame で GpuContext が決める
+// アトラスに置くグリフの画素（§13 グリフのアトラス・グリフの作り方・ヒンティング）
+// Bitmap は画面上の大きさでラスタライズした覆い率、Sdf / Msdf は sdf_em_size の大きさの距離の場（sdf.rs、msdf feature）
+// 画素は ResourceManager が持ち、アトラス上の配置は end_frame で GpuContext が決める
 
 use std::collections::HashMap;
 
@@ -21,9 +22,22 @@ pub enum Hinting {
     Light,
 }
 
-// (FontId, グリフ, 画素の大きさ, ヒンティング, 太らせる量, 縁取りの太さ)。量は em に対する割合の f32 のビット列
+// 画素の種類
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum RasterKind {
+    // 覆い率（R8Unorm）
+    Coverage,
+    // 1 チャンネルの距離（R8Unorm）
+    Sdf,
+    // MTSDF（Rgba8Unorm）
+    Msdf,
+}
+
+// Bitmap は (FontId, グリフ, 画素の大きさ, ヒンティング, 太らせる量, 縁取りの太さ)。量は em に対する割合の f32 のビット列
+// Sdf / Msdf は (FontId, グリフ) だけで決まる（太字・縁取りはシェーダーで作る）。残りは 0
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct BitmapKey {
+    pub kind: RasterKind,
     pub font: FontId,
     pub glyph: u32,
     pub pixel_size: u32,
@@ -34,18 +48,43 @@ pub(crate) struct BitmapKey {
 
 impl BitmapKey {
     pub(crate) fn new(font: FontId, glyph: u32, pixel_size: u32, hinting: Hinting, bold: f32, outline: f32) -> Self {
-        Self { font, glyph, pixel_size, hinting, bold: bold.max(0.0).to_bits(), outline: outline.max(0.0).to_bits() }
+        Self {
+            kind: RasterKind::Coverage,
+            font,
+            glyph,
+            pixel_size,
+            hinting,
+            bold: bold.max(0.0).to_bits(),
+            outline: outline.max(0.0).to_bits(),
+        }
+    }
+
+    pub(crate) fn distance(font: FontId, glyph: u32, multi_channel: bool) -> Self {
+        let kind = if multi_channel { RasterKind::Msdf } else { RasterKind::Sdf };
+
+        Self { kind, font, glyph, pixel_size: 0, hinting: Hinting::None, bold: 0, outline: 0 }
     }
 }
 
+// Sdf / Msdf を作る大きさ（TextConfig の値）
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub(crate) struct DistanceSettings {
+    pub em_size: u32,
+    pub range: f32,
+}
+
 // グリフの画素。left・top はグリフの原点（ベースライン上）からの位置（画素、y は下向き）
+// bytes_per_pixel は 1（R8Unorm）か 4（Rgba8Unorm）
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct RasterGlyph {
     pub left: i32,
     pub top: i32,
     pub width: u32,
     pub height: u32,
-    pub coverage: Vec<u8>,
+    pub bytes_per_pixel: u32,
+    pub pixels: Vec<u8>,
+    // Sdf / Msdf の距離の幅と 1 em の大きさ。glyph_rects に書く（§13 Sdf / Msdf の細部）
+    pub distance: Option<DistanceSettings>,
 }
 
 impl RasterGlyph {
@@ -99,9 +138,12 @@ impl BitmapCache {
         self.glyphs.get(key)
     }
 
-    // ラスタライズして入れる。空でなければ番号を発行し、置く要求を溜める
-    pub(crate) fn insert(&mut self, font: &FontData, key: BitmapKey, frame: u64) {
-        let raster = self.rasterize(font, &key);
+    // 画素を作って入れる。空でなければ番号を発行し、置く要求を溜める
+    pub(crate) fn insert(&mut self, font: &FontData, key: BitmapKey, frame: u64, distance: DistanceSettings) {
+        let raster = match key.kind {
+            RasterKind::Coverage => self.rasterize(font, &key),
+            RasterKind::Sdf | RasterKind::Msdf => generate_distance(font, &key, distance),
+        };
         let slot = if raster.is_empty() { 0 } else { self.issue_slot(key) };
 
         if slot != 0 {
@@ -171,6 +213,7 @@ impl BitmapCache {
         self.hinting.retain(|&(hinted, _), _| hinted != font);
     }
 
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.glyphs.len()
     }
@@ -218,8 +261,44 @@ impl BitmapCache {
 
         let (coverage, placement) = Mask::new(&commands).style(Fill::NonZero).format(Format::Alpha).render();
 
-        RasterGlyph { left: placement.left, top: placement.top, width: placement.width, height: placement.height, coverage }
+        RasterGlyph {
+            left: placement.left,
+            top: placement.top,
+            width: placement.width,
+            height: placement.height,
+            bytes_per_pixel: 1,
+            pixels: coverage,
+            distance: None,
+        }
     }
+}
+
+// Sdf / Msdf の距離の場（§13 Sdf / Msdf の細部）。msdf feature がなければ write_text などで先に panic している
+#[cfg(feature = "msdf")]
+fn generate_distance(font: &FontData, key: &BitmapKey, distance: DistanceSettings) -> RasterGlyph {
+    let Ok(font_ref) = FontRef::from_index(font.bytes.as_slice(), 0) else {
+        return RasterGlyph::default();
+    };
+    let Some(glyph) = font_ref.outline_glyphs().get(GlyphId::new(key.glyph)) else {
+        return RasterGlyph::default();
+    };
+    let mut recorder = Recorder::default();
+
+    if glyph.draw(DrawSettings::unhinted(Size::unscaled(), LocationRef::default()), &mut recorder).is_err() {
+        return RasterGlyph::default();
+    }
+
+    let scale = distance.em_size as f64 / font.units_per_em as f64;
+
+    RasterGlyph {
+        distance: Some(distance),
+        ..crate::text::sdf::generate(&recorder.0, scale, distance.range as f64, key.kind == RasterKind::Msdf)
+    }
+}
+
+#[cfg(not(feature = "msdf"))]
+fn generate_distance(_: &FontData, _: &BitmapKey, _: DistanceSettings) -> RasterGlyph {
+    unreachable!("Sdf / Msdf の画素は msdf feature がなければ作らない")
 }
 
 // 横方向は変えず、縦方向だけを画素の格子に合わせる（§13 ヒンティング）
