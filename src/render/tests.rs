@@ -181,6 +181,50 @@ fn stroke_draws_dashes() {
     }
 }
 
+// ---- 形の区切り（§10）----
+
+// 8〜24 と 40〜56 の正方形を TriangleFan で描く。split なら begin_shape() で 2 つの形に分ける
+fn draw_two_squares(scene: &mut Scene, split: bool) -> Vec<[u8; 4]> {
+    let mut manager = manager_2d(scene);
+    let mut object = Object2D::new(&scene.gpu);
+    object.memory_update_type(MemoryUpdateType::Dynamic).topology(Topology::TriangleFan).shader(scene.shader);
+    object.add_instance(Instance2D::default());
+
+    scene.gpu.begin_frame();
+    object.begin();
+    for (i, left) in [8.0, 40.0].into_iter().enumerate() {
+        if i == 1 && split {
+            object.begin_shape();
+        }
+        for (x, y) in [(left, 24.0), (left + 16.0, 24.0), (left + 16.0, 40.0), (left, 40.0)] {
+            object.vertex(Vertex::new_position_color(x, y, 0.0, 1.0, 1.0, 1.0, 1.0));
+        }
+    }
+    object.end(&mut manager);
+    scene.gpu.end_frame(&mut scene.resources, &mut [SurfaceDraw {
+        surface: scene.surface,
+        clear_color: Some(Color::BLACK),
+        draw_managers: &mut [&mut manager],
+    }])
+    .unwrap();
+
+    scene.gpu.read_pixels(scene.surface)
+}
+
+#[test]
+fn begin_shape_draws_separate_shapes() {
+    let Some(mut scene) = scene(SHADER_2D) else { return };
+
+    let split = draw_two_squares(&mut scene, true);
+    assert_color(pixel(&split, 16, 32), [255, 255, 255], "1 つ目の正方形");
+    assert_color(pixel(&split, 48, 32), [255, 255, 255], "2 つ目の正方形");
+    assert_color(pixel(&split, 32, 32), [0, 0, 0], "正方形の間");
+
+    // 区切らなければ 8 頂点の 1 つの扇形になり、間も塗られる
+    let joined = draw_two_squares(&mut scene, false);
+    assert_color(pixel(&joined, 32, 32), [255, 255, 255], "区切らない場合の正方形の間");
+}
+
 // ---- 穴のある多角形（§10）----
 
 // 16〜48 の白い正方形に、28〜36 の正方形の穴を空けて描く。cull_mode は既定（Back）

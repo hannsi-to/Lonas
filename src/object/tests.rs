@@ -377,6 +377,46 @@ fn staging_chunks_are_reused() {
     assert_eq!(active + free + in_flight, total, "GPU が追いついた後にチャンクが増えました");
 }
 
+// 形の区切りが変われば、頂点が同じでもインデックスを作り直す（§10 形の区切り）
+#[test]
+fn indices_follow_shape_breaks() {
+    let Some(mut gpu) = headless(sample_config()) else { return };
+    let mut resources = ResourceManager::new();
+    let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), VertexLayout::Position);
+    let mut object = Object2D::new(&gpu);
+    object.memory_update_type(MemoryUpdateType::Dynamic).topology(Topology::TriangleFan);
+    object.add_instance(Instance2D::default());
+
+    let draw = |gpu: &mut GpuContext, object: &mut Object2D, manager: &mut DrawManager2D, split: Option<usize>| {
+        gpu.begin_frame();
+        object.begin();
+        for i in 0..6 {
+            if Some(i) == split {
+                object.begin_shape();
+            }
+            object.vertex(Vertex::new_position(i as f32, (i % 2) as f32, 0.0));
+        }
+        object.end(manager);
+    };
+
+    // 区切らなければ 6 頂点の扇形（三角形 4 つ）
+    draw(&mut gpu, &mut object, &mut manager, None);
+    assert_eq!(object.core.index_values(), [0, 1, 2, 0, 2, 3, 0, 3, 4, 0, 4, 5]);
+    end_frame(&mut gpu, &mut resources, &mut manager);
+
+    // 3 頂点ずつに区切ると、2 つの扇形（三角形 2 つ）。頂点は送り直さない
+    draw(&mut gpu, &mut object, &mut manager, Some(3));
+    assert_eq!(object.core.index_values(), [0, 1, 2, 3, 4, 5]);
+    assert!(!writes(&manager, SpaceKind::Index).is_empty());
+    assert!(writes(&manager, SpaceKind::Vertex(VertexLayout::Position)).is_empty());
+    end_frame(&mut gpu, &mut resources, &mut manager);
+
+    // 同じ区切りなら作り直さない
+    draw(&mut gpu, &mut object, &mut manager, Some(3));
+    assert!(manager.core.heap_requests.is_empty());
+    end_frame(&mut gpu, &mut resources, &mut manager);
+}
+
 // 穴の区切りが変われば、頂点が同じでもインデックスを作り直す（§10 穴のある多角形）
 #[test]
 fn polygon_indices_follow_hole_boundaries() {

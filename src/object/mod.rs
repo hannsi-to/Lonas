@@ -66,7 +66,14 @@ macro_rules! object_common {
                 self
             }
 
-            // 以降の vertex() を、次の begin_hole() か end まで 1 つの穴の輪郭にする（§10 穴のある多角形）
+            // 以降の vertex() を、新しい形にする（§10 形の区切り）。どの分け方でも、形ごとに別々に三角形を作る
+            // index() を呼んだフレームでは使わない
+            pub fn begin_shape(&mut self) -> &mut Self {
+                self.core.begin_shape();
+                self
+            }
+
+            // 以降の vertex() を、次の begin_hole() か begin_shape() か end まで、今の形の 1 つの穴の輪郭にする（§10 穴のある多角形）
             // Polygon は穴を空けて塗り、Stroke は穴の輪郭も描く。他の分け方では穴を使わない
             pub fn begin_hole(&mut self) -> &mut Self {
                 self.core.begin_hole();
