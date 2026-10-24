@@ -67,7 +67,7 @@ macro_rules! object_common {
             }
 
             // 以降の vertex() を、新しい形にする（§10 形の区切り）。Fill でも Stroke でも、形ごとに別々に三角形を作る
-            // index() を呼んだフレームでは使わない
+            // index() を呼んだ形はそのインデックスを使い、呼ばなかった形だけを paint_type で作る（§10 インデックス）
             pub fn begin_shape(&mut self) -> &mut Self {
                 self.core.begin_shape();
                 self

@@ -96,9 +96,16 @@ pub(crate) struct ObjectCore<I> {
     positions_changed: bool,
     elements_written: VertexElements,
     indices: Vec<u32>,
-    index_cursor: usize,
     index_dirty: Option<Range<u32>>,
+    // このフレームに index() で書いたインデックス（Object 全体の通し番号）と、begin_shape() を呼んだ時点の書いた数
+    // 形ごとに、index() を呼んだ形はそのインデックス、呼ばなかった形は paint_type で作ったものを indices に並べる（§10 インデックス）
+    written_indices: Vec<u32>,
+    shape_index_starts: Vec<usize>,
     explicit_indices: bool,
+    // Fill で作った形ごとのインデックスと、その時に index() で指定した形
+    generated: Vec<u32>,
+    generated_shapes: Vec<Range<usize>>,
+    explicit_shapes: Vec<bool>,
     // 最後に自動で作ったインデックスの元（paint_type と頂点数）。None は作っていない
     generated_for: Option<(PaintType, usize)>,
     // Stroke のときに GPU へ送る頂点。このとき vertices は線の中心の点になる（§10 線：Stroke）
@@ -168,9 +175,13 @@ impl<I: InstanceData> ObjectCore<I> {
             positions_changed: false,
             elements_written: VertexElements::Position,
             indices: Vec::new(),
-            index_cursor: 0,
             index_dirty: None,
+            written_indices: Vec::new(),
+            shape_index_starts: Vec::new(),
             explicit_indices: false,
+            generated: Vec::new(),
+            generated_shapes: Vec::new(),
+            explicit_shapes: Vec::new(),
             generated_for: None,
             stroke_vertices: Vec::new(),
             uses_stroke: false,
@@ -202,7 +213,8 @@ impl<I: InstanceData> ObjectCore<I> {
 
         self.begun_frame = Some(frame);
         self.vertex_cursor = 0;
-        self.index_cursor = 0;
+        self.written_indices.clear();
+        self.shape_index_starts.clear();
         self.explicit_indices = false;
         self.break_cursor.clear();
     }
@@ -210,6 +222,7 @@ impl<I: InstanceData> ObjectCore<I> {
     // 以降の頂点を、新しい形にする（§10 形の区切り）
     pub(crate) fn begin_shape(&mut self) {
         self.break_cursor.push(Break::Shape(self.vertex_cursor));
+        self.shape_index_starts.push(self.written_indices.len());
     }
 
     // 以降の頂点を、今の形の穴の輪郭にする（§10 穴のある多角形）
@@ -238,22 +251,10 @@ impl<I: InstanceData> ObjectCore<I> {
         }
     }
 
+    // 番号は Object 全体の頂点の通し番号。前のフレームとの比較は、end で形ごとに並べた後に行う（§10 インデックス）
     pub(crate) fn write_index(&mut self, index: u32) {
-        let position = self.index_cursor;
-        self.index_cursor += 1;
+        self.written_indices.push(index);
         self.explicit_indices = true;
-
-        match self.indices.get_mut(position) {
-            Some(old) if *old == index => {}
-            Some(old) => {
-                *old = index;
-                extend_range(&mut self.index_dirty, position);
-            }
-            None => {
-                self.indices.push(index);
-                extend_range(&mut self.index_dirty, position);
-            }
-        }
     }
 
     // ---- 設定（§3 同値時の扱い）----
@@ -402,27 +403,44 @@ impl<I: InstanceData> ObjectCore<I> {
             self.breaks.clone_from(&self.break_cursor);
         }
 
-        if self.explicit_indices {
-            self.indices.truncate(self.index_cursor);
-            self.generated_for = None;
-            return self.leave_stroke() || positions_changed;
+        // 形ごとに index() で書いた範囲。空なら、その形は paint_type から作る（§10 インデックス）
+        let starts: Vec<usize> = std::iter::once(0).chain(self.shape_index_starts.iter().copied()).collect();
+        let written: Vec<Range<usize>> = starts
+            .iter()
+            .enumerate()
+            .map(|(i, &start)| start..starts.get(i + 1).copied().unwrap_or(self.written_indices.len()))
+            .collect();
+        let explicit: Vec<bool> = written.iter().map(|range| !range.is_empty()).collect();
+        let any_automatic = explicit.iter().any(|&e| !e);
+
+        if !any_automatic {
+            // すべての形を index() で指定した
+            return self.finish_explicit(&written, None) || positions_changed;
         }
 
-        // index() を呼ばなければ paint_type から作る（§10 インデックス）
         let paint_type = self.paint_type.expect("index() も paint_type() も呼ばずに Object の end が呼ばれました");
 
         if let PaintType::Stroke { .. } = paint_type {
-            return self.finish_stroke(paint_type, breaks_changed);
+            if !self.explicit_indices {
+                return self.finish_stroke(paint_type, breaks_changed);
+            }
+
+            // Stroke は作った頂点を送るため、元の頂点を指す index() とは混ぜられない。index() を呼んだフレームは Stroke を使わない
+            if self.warned.insert("stroke_with_index") {
+                log::warn!("Stroke と index() は同じ Object で混ぜられません。index() を呼んだフレームでは、index() を呼ばなかった形を描きません");
+            }
+
+            return self.finish_explicit(&written, None) || positions_changed;
         }
 
-        let left_stroke = self.leave_stroke();
         let key = (paint_type, self.vertices.len());
-        // Fill は頂点の位置で分け方が変わる
-        let needs_generation = self.generated_for != Some(key) || breaks_changed || positions_changed;
+        // Fill は頂点の位置で分け方が変わる。index() で指定する形が変わった場合も作り直す
+        let needs_generation =
+            self.generated_for != Some(key) || breaks_changed || positions_changed || self.explicit_shapes != explicit;
 
         if needs_generation {
             let positions: Vec<Vector3f> = self.vertices.iter().map(|v| Vector3f::new(v.x, v.y, v.z)).collect();
-            let generated = paint_type::fill(&positions, &self.breaks, self.winding);
+            let generated = paint_type::fill(&positions, &self.breaks, &explicit, self.winding);
 
             // 描かない形がある状態になった時に 1 回だけ警告する（§10）
             if generated.has_leftover && !self.had_leftover {
@@ -430,11 +448,41 @@ impl<I: InstanceData> ObjectCore<I> {
             }
 
             self.had_leftover = generated.has_leftover;
-            replace_tracking(&mut self.indices, generated.indices, &mut self.index_dirty);
+            self.generated = generated.indices;
+            self.generated_shapes = generated.shapes;
             self.generated_for = Some(key);
+            self.explicit_shapes = explicit;
         }
 
+        let generated = (std::mem::take(&mut self.generated), std::mem::take(&mut self.generated_shapes));
+        let left_stroke = self.finish_explicit(&written, Some((&generated.0, &generated.1)));
+        (self.generated, self.generated_shapes) = generated;
+
         positions_changed || left_stroke
+    }
+
+    // 形ごとに、index() で書いたインデックスか、作ったインデックス（generated）を並べ、前と違う位置だけを送る
+    // 元の頂点をそのまま送るため、Stroke をやめた場合は true
+    fn finish_explicit(&mut self, written: &[Range<usize>], generated: Option<(&[u32], &[Range<usize>])>) -> bool {
+        let mut indices = Vec::with_capacity(self.indices.len());
+
+        for (shape, range) in written.iter().enumerate() {
+            if !range.is_empty() {
+                indices.extend_from_slice(&self.written_indices[range.clone()]);
+            } else if let Some((generated, shapes)) = generated
+                && let Some(range) = shapes.get(shape)
+            {
+                indices.extend_from_slice(&generated[range.clone()]);
+            }
+        }
+
+        if generated.is_none() {
+            // paint_type から作る形がないため、次に作る時は必ず作り直す
+            self.generated_for = None;
+        }
+
+        replace_tracking(&mut self.indices, indices, &mut self.index_dirty);
+        self.leave_stroke()
     }
 
     // 線の中心の点から、GPU に送る頂点とインデックスを作る（§10 線：Stroke）
