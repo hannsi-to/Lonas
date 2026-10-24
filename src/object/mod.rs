@@ -185,6 +185,17 @@ macro_rules! object_common {
                 self.core.instances.live_count()
             }
 
+            // このフレームの begin から vertex() で書いた頂点の数。begin で 0 に戻り、end の後も次の begin までは同じ値
+            // index() の番号は Object 全体の通し番号のため、begin_shape() の後の形の番号の起点に使える
+            pub fn get_written_vertex_count(&self) -> usize {
+                self.core.written_vertex_count()
+            }
+
+            // このフレームの begin から index() で積んだ数。begin で 0 に戻り、end の後も次の begin までは同じ値
+            pub fn get_written_index_count(&self) -> usize {
+                self.core.written_index_count()
+            }
+
             // 最後の end の時点の頂点（vertex() で書いたもの）。begin〜end の間は書きかけ
             // Stroke では線の中心の点で、線として作った頂点ではない
             pub fn get_vertices(&self) -> &[Vertex] {
