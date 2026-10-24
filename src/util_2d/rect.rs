@@ -63,12 +63,12 @@ pub fn build_rect_4p(
     object2d.vertex(left_bottom);
     match paint_type {
         PaintType::Fill => {
-            object2d.index(base_vertex + 0);
+            object2d.index(base_vertex);
             object2d.index(base_vertex + 1);
             object2d.index(base_vertex + 2);
             object2d.index(base_vertex + 2);
             object2d.index(base_vertex + 3);
-            object2d.index(base_vertex + 0);
+            object2d.index(base_vertex);
         }
         PaintType::Stroke { .. } => {
 

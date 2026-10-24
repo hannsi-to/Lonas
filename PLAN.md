@@ -50,7 +50,7 @@ src/
 | 9 | `harfrust`・`skrifa`・`unicode-linebreak`（`text` feature） | 整形・輪郭・折り返し（§13） |
 | 10 | `lyon_tessellation`（`text` feature） | グリフの三角形化（§13 ベクター） |
 | 11 | `zeno`（`text` feature） | グリフのラスタライズ（§13 グリフの作り方） |
-| 12 | msdfgen（`msdf` feature。クレートは段階 12 の最初に決める） | SDF / MSDF（§13） |
+| 12 | `fdsm`（`msdf` feature。段階 12 の最初に msdfgen から変更） | SDF / MSDF（§13） |
 
 ---
 
@@ -300,11 +300,11 @@ src/
 
 **目的**：`msdf` feature で `GlyphMethod::Sdf` / `Msdf` を描く（§13 グリフの作り方・シェーダー）。
 
-- [ ] **最初に msdfgen を使うクレートを決める**（既存のバインディングか、自前の FFI か）。Windows と Linux の CI でビルドできることを確かめる
-- [ ] `msdf` feature を足し、既定で無効にする。feature なしで `Sdf` / `Msdf` を使った時の panic
-- [ ] `sdf_em_size`・`sdf_range` で SDF（`R8Unorm`）と MTSDF（`Rgba8Unorm`）を作る
-- [ ] 太字・縁取り：`normal.y` で境目をずらす。縁取りは大きくした四角形を字の後ろに書く。`sdf_range` を超えた量の切り詰めと警告
-- [ ] `lonas_glyph_sdf` / `lonas_glyph_msdf`（median・fwidth でのぼかし）と `text_shader` の `Sdf` / `Msdf` 用
+- [x] **最初に msdfgen を使うクレートを決める**（既存のバインディングか、自前の FFI か）。Windows と Linux の CI でビルドできることを確かめる → Rust だけで書かれた fdsm に決めた（msdfgen-sys は Windows 用のバインディングがなく libclang が要る。§13 Cargo の feature）
+- [x] `msdf` feature を足し、既定で無効にする。feature なしで `Sdf` / `Msdf` を使った時の panic
+- [x] `sdf_em_size`・`sdf_range` で SDF（`R8Unorm`）と MTSDF（`Rgba8Unorm`）を作る
+- [x] 太字・縁取り：`normal.y` で境目をずらす。縁取りは大きくした四角形を字の後ろに書く。`sdf_range` を超えた量の切り詰めと警告
+- [x] `lonas_glyph_sdf` / `lonas_glyph_msdf`（median・fwidth でのぼかし）と `text_shader` の `Sdf` / `Msdf` 用
 
 **終わりの条件**
 - 同じ文字を大きく拡大しても縁がくっきりしていることを画像で確かめる example（`Bitmap` と並べて比べる）

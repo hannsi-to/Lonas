@@ -43,9 +43,9 @@ pub fn build_isosceles_triangle (
     let height = (side * side - half_base * half_base).sqrt();
     build_triangle_3p(
         object2d,
-        midpoint_base_vertex.clone().translate(0.0, -height,0.0),
-        midpoint_base_vertex.clone().translate(half_base, 0.0,0.0),
-        midpoint_base_vertex.clone().translate(-half_base, 0.0,0.0),
+        midpoint_base_vertex.translate(0.0, -height,0.0),
+        midpoint_base_vertex.translate(half_base, 0.0,0.0),
+        midpoint_base_vertex.translate(-half_base, 0.0,0.0),
     )
 }
 
@@ -70,9 +70,9 @@ pub fn build_scalene_triangle (
 
     build_triangle_3p(
         object2d,
-        center_vertex.clone().translate(-centroid_x, -centroid_y, 0.0),
-        center_vertex.clone().translate(side3 - centroid_x, -centroid_y, 0.0),
-        center_vertex.clone().translate(x - centroid_x, y - centroid_y, 0.0),
+        center_vertex.translate(-centroid_x, -centroid_y, 0.0),
+        center_vertex.translate(side3 - centroid_x, -centroid_y, 0.0),
+        center_vertex.translate(x - centroid_x, y - centroid_y, 0.0),
     )
 }
 
@@ -92,7 +92,7 @@ pub fn build_triangle_3p(
     object2d.vertex(p3);
     match paint_type {
         PaintType::Fill => {
-            object2d.index(base_vertex + 0);
+            object2d.index(base_vertex);
             object2d.index(base_vertex + 1);
             object2d.index(base_vertex + 2);
         }

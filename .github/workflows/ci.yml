@@ -12,7 +12,12 @@ env:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # msdf feature（fdsm）を含めて、Linux と Windows でビルドとテストを通す（PLAN.md 段階 12）
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       # 新しいリリースで増えた lint で突然落ちないよう、手元と同じ版に固定する。上げるときは手元と揃えて変える
@@ -23,5 +28,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: clippy
         run: cargo clippy --all-targets -- -D warnings
+      - name: clippy (msdf)
+        run: cargo clippy --all-targets --features msdf -- -D warnings
       - name: test
         run: cargo test
+      - name: test (msdf)
+        run: cargo test --features msdf

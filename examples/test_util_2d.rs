@@ -1,3 +1,6 @@
+// util_2d の関数を差し替えて試すため、使っていない import を許す
+#![allow(unused_imports)]
+
 use std::sync::Arc;
 use log::{error, info};
 

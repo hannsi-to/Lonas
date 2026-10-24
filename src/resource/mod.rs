@@ -11,7 +11,7 @@ use crate::error::LonasError;
 use shader::{CheckedShader, ShaderReflection, check_wgsl};
 use crate::slots::{SlotId, Slots};
 #[cfg(feature = "text")]
-use crate::text::bitmap::{BitmapCache, BitmapGlyph, BitmapKey};
+use crate::text::bitmap::{BitmapCache, BitmapGlyph, BitmapKey, DistanceSettings};
 #[cfg(feature = "text")]
 use crate::text::vector::{GlyphShape, ShapeKey, VectorCache, tessellate_glyph};
 #[cfg(feature = "text")]
@@ -87,6 +87,9 @@ pub struct ResourceManager {
     // ラスタライズしたグリフと、グリフの番号（§13 グリフのアトラス）
     #[cfg(feature = "text")]
     bitmap_cache: BitmapCache,
+    // Sdf / Msdf の太らせる量を切り詰めた警告を出したか
+    #[cfg(feature = "text")]
+    warned_thickening: std::sync::atomic::AtomicBool,
     // ResourceManager のフレームの番号。end_frame で進める（§13 書き込み：write_text の細部）
     #[cfg(feature = "text")]
     text_frame: u64,
@@ -118,6 +121,8 @@ impl ResourceManager {
             vector_cache: VectorCache::default(),
             #[cfg(feature = "text")]
             bitmap_cache: BitmapCache::default(),
+            #[cfg(feature = "text")]
+            warned_thickening: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "text")]
             text_frame: 0,
             #[cfg(feature = "text")]
@@ -260,7 +265,8 @@ impl ResourceManager {
         }
 
         let font = self.fonts.get(key.font.0).expect("登録解除済みの FontId です");
-        self.bitmap_cache.insert(font, key, self.text_frame);
+        let distance = DistanceSettings { em_size: self.text_config.sdf_em_size, range: self.text_config.sdf_range };
+        self.bitmap_cache.insert(font, key, self.text_frame, distance);
 
         if limited {
             self.new_glyphs += 1;
@@ -278,6 +284,23 @@ impl ResourceManager {
     #[cfg(feature = "text")]
     pub(crate) fn bitmap_cache_mut(&mut self) -> &mut BitmapCache {
         &mut self.bitmap_cache
+    }
+
+    // Sdf / Msdf で太らせる量（em）を、sdf_range で表せる量に切り詰める。切り詰めたら一度だけ警告する（§13 グリフの作り方）
+    #[cfg(feature = "text")]
+    pub(crate) fn clamp_thickening(&self, thickening: f32) -> f32 {
+        let max = self.text_config.sdf_range / 2.0 / self.text_config.sdf_em_size as f32;
+
+        if thickening > max {
+            if !self.warned_thickening.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                log::warn!(
+                    "Sdf / Msdf で太らせる量（{thickening} em）が sdf_range で表せる量（{max} em）を超えたため、切り詰めます。TextConfig::sdf_range を大きくしてください",
+                );
+            }
+            return max;
+        }
+
+        thickening
     }
 
     #[cfg(feature = "text")]

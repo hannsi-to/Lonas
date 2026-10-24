@@ -1,3 +1,6 @@
+// util_2d の関数を差し替えて試すため、使っていない import を許す
+#![allow(unused_imports)]
+
 use std::sync::Arc;
 use log::{error, info};
 
@@ -119,12 +122,12 @@ impl State {
 
         let base_vertex = self.point_2d.get_written_vertex_count() as u32;
 
-        self.point_2d.index(base_vertex + 0);
+        self.point_2d.index(base_vertex);
         self.point_2d.index(base_vertex + 1);
         self.point_2d.index(base_vertex + 2);
         self.point_2d.index(base_vertex + 2);
         self.point_2d.index(base_vertex + 3);
-        self.point_2d.index(base_vertex + 0);
+        self.point_2d.index(base_vertex);
 
         // self.point_2d.begin_shape();
 

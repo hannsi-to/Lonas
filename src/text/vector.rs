@@ -69,6 +69,7 @@ impl VectorCache {
         Some(&cached.shape)
     }
 
+    #[cfg(test)]
     pub(crate) fn contains(&self, key: &ShapeKey) -> bool {
         self.shapes.contains_key(key)
     }
@@ -86,10 +87,7 @@ impl VectorCache {
         }
     }
 
-    pub(crate) fn bytes(&self) -> usize {
-        self.bytes
-    }
-
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.shapes.len()
     }
