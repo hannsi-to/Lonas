@@ -40,7 +40,7 @@ impl ApplicationHandler for App {
         // ウィンドウは GpuContext が持ち続けるため、Arc を複製して渡す
         let (gpu, surface) = GpuContext::new(window.clone(), size.width, size.height, common::config()).unwrap();
 
-        self.state = Some(State { window, gpu, surface, resource_manager: ResourceManager::new(), frame: 0 });
+        self.state = Some(State { window, gpu, surface, resource_manager: ResourceManager::new(common::resource_config()), frame: 0 });
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {

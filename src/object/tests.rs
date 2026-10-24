@@ -9,7 +9,7 @@ use crate::draw::{Camera2D, Camera3D, HeapRequest, SpaceKind};
 use crate::vertex::{Vertex, VertexLayout};
 use crate::gpu::{SurfaceDraw, SurfaceId, heap::Heap};
 use crate::math::Quaternion;
-use crate::resource::ResourceManager;
+use crate::resource::{ResourceConfig, ResourceManager};
 
 // headless() が最初に足す描画先。end_frame に渡す
 fn surface(gpu: &GpuContext) -> SurfaceId {
@@ -129,7 +129,7 @@ fn vertex_struct_is_stored_as_given() {
 #[test]
 fn only_changed_vertices_are_written() {
     let Some(mut gpu) = headless(sample_config()) else { return };
-    let mut resources = ResourceManager::new();
+    let mut resources = ResourceManager::new(ResourceConfig::for_tests());
     let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), VertexLayout::PositionColor);
     let mut object = new_triangle(&gpu, MemoryUpdateType::Dynamic);
     let stride = VertexLayout::PositionColor.stride() as u64;
@@ -175,7 +175,7 @@ fn heap_contents_match_cpu_copy_after_growth_and_compaction() {
     config.static_compaction_threshold = 0.0;
 
     let Some(mut gpu) = headless(config) else { return };
-    let mut resources = ResourceManager::new();
+    let mut resources = ResourceManager::new(ResourceConfig::for_tests());
     let layout = VertexLayout::PositionColor;
     let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), layout);
     let mut statics: Vec<Object2D> = (0..3).map(|_| new_triangle(&gpu, MemoryUpdateType::Static)).collect();
@@ -219,7 +219,7 @@ fn reclaimed_object_is_uploaded_again() {
     config.gc_unused_frames = 2;
 
     let Some(mut gpu) = headless(config) else { return };
-    let mut resources = ResourceManager::new();
+    let mut resources = ResourceManager::new(ResourceConfig::for_tests());
     let layout = VertexLayout::PositionColor;
     let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), layout);
     let mut object = new_triangle(&gpu, MemoryUpdateType::Static);
@@ -253,7 +253,7 @@ fn reclaimed_object_is_uploaded_again() {
 #[test]
 fn dropped_object_is_freed_at_end_frame() {
     let Some(mut gpu) = headless(sample_config()) else { return };
-    let mut resources = ResourceManager::new();
+    let mut resources = ResourceManager::new(ResourceConfig::for_tests());
     let layout = VertexLayout::PositionColor;
     let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), layout);
     let mut object = new_triangle(&gpu, MemoryUpdateType::Static);
@@ -279,7 +279,7 @@ fn dropping_reclaimed_object_clears_the_record() {
     config.gc_unused_frames = 2;
 
     let Some(mut gpu) = headless(config) else { return };
-    let mut resources = ResourceManager::new();
+    let mut resources = ResourceManager::new(ResourceConfig::for_tests());
     let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), VertexLayout::PositionColor);
     let mut object = new_triangle(&gpu, MemoryUpdateType::Static);
 
@@ -305,7 +305,7 @@ fn dropping_reclaimed_object_clears_the_record() {
 #[test]
 fn indices_come_from_paint_type_or_index_calls() {
     let Some(mut gpu) = headless(sample_config()) else { return };
-    let mut resources = ResourceManager::new();
+    let mut resources = ResourceManager::new(ResourceConfig::for_tests());
     let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), VertexLayout::Position);
     let mut object = Object2D::new(&gpu);
     object.memory_update_type(MemoryUpdateType::Dynamic).paint_type(PaintType::Fill);
@@ -339,7 +339,7 @@ fn indices_come_from_paint_type_or_index_calls() {
 #[test]
 fn staging_chunks_are_reused() {
     let Some(mut gpu) = headless(sample_config()) else { return };
-    let mut resources = ResourceManager::new();
+    let mut resources = ResourceManager::new(ResourceConfig::for_tests());
     let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), VertexLayout::PositionColor);
     let mut object = new_triangle(&gpu, MemoryUpdateType::Dynamic);
 
@@ -452,7 +452,7 @@ fn getters_return_current_state() {
 #[test]
 fn written_counts_during_frame() {
     let Some(mut gpu) = headless(sample_config()) else { return };
-    let mut resources = ResourceManager::new();
+    let mut resources = ResourceManager::new(ResourceConfig::for_tests());
     let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), VertexLayout::Position);
     let mut object = Object2D::new(&gpu);
     object.memory_update_type(MemoryUpdateType::Dynamic).paint_type(PaintType::Fill);
@@ -505,7 +505,7 @@ fn object_3d_bounding_sphere_getter() {
 #[test]
 fn index_and_automatic_shapes_can_be_mixed() {
     let Some(mut gpu) = headless(sample_config()) else { return };
-    let mut resources = ResourceManager::new();
+    let mut resources = ResourceManager::new(ResourceConfig::for_tests());
     let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), VertexLayout::Position);
     let mut object = Object2D::new(&gpu);
     object.memory_update_type(MemoryUpdateType::Dynamic).paint_type(PaintType::Fill);
@@ -564,7 +564,7 @@ fn index_and_automatic_shapes_can_be_mixed() {
 #[test]
 fn stroke_and_index_shapes_can_be_mixed() {
     let Some(mut gpu) = headless(sample_config()) else { return };
-    let mut resources = ResourceManager::new();
+    let mut resources = ResourceManager::new(ResourceConfig::for_tests());
     let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), VertexLayout::Position);
     let mut object = Object2D::new(&gpu);
     let stroke = PaintType::Stroke { line_width: 2.0, joint_type: crate::object::JointType::Miter, strip: false, dash: None };
@@ -612,7 +612,7 @@ fn stroke_and_index_shapes_can_be_mixed() {
 #[test]
 fn indices_follow_shape_breaks() {
     let Some(mut gpu) = headless(sample_config()) else { return };
-    let mut resources = ResourceManager::new();
+    let mut resources = ResourceManager::new(ResourceConfig::for_tests());
     let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), VertexLayout::Position);
     let mut object = Object2D::new(&gpu);
     object.memory_update_type(MemoryUpdateType::Dynamic).paint_type(PaintType::Fill);
@@ -659,7 +659,7 @@ fn indices_follow_shape_breaks() {
 #[test]
 fn polygon_indices_follow_hole_boundaries() {
     let Some(mut gpu) = headless(sample_config()) else { return };
-    let mut resources = ResourceManager::new();
+    let mut resources = ResourceManager::new(ResourceConfig::for_tests());
     let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), VertexLayout::Position);
     let mut object = Object2D::new(&gpu);
     object.memory_update_type(MemoryUpdateType::Dynamic).paint_type(PaintType::Fill);
@@ -701,7 +701,7 @@ fn polygon_indices_follow_hole_boundaries() {
 #[test]
 fn stroke_uploads_generated_vertices_and_switches_back() {
     let Some(mut gpu) = headless(sample_config()) else { return };
-    let mut resources = ResourceManager::new();
+    let mut resources = ResourceManager::new(ResourceConfig::for_tests());
     let layout = VertexLayout::PositionColor;
     let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), layout);
     let vertices = SpaceKind::Vertex(layout);
@@ -771,7 +771,7 @@ fn stroke_uploads_generated_vertices_and_switches_back() {
 #[test]
 fn draw_commands_are_cleared_when_device_is_lost() {
     let Some(mut gpu) = headless(sample_config()) else { return };
-    let mut resources = ResourceManager::new();
+    let mut resources = ResourceManager::new(ResourceConfig::for_tests());
     let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), VertexLayout::Position);
     let mut object = new_triangle(&gpu, MemoryUpdateType::Dynamic);
 
@@ -794,7 +794,7 @@ fn draw_commands_are_cleared_when_device_is_lost() {
 #[test]
 fn misuse_panics() {
     let Some(mut gpu) = headless(sample_config()) else { return };
-    let mut resources = ResourceManager::new();
+    let mut resources = ResourceManager::new(ResourceConfig::for_tests());
     let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), VertexLayout::Position);
     let mut other_manager = DrawManager2D::new(&mut gpu, camera_2d(), VertexLayout::Position);
 
@@ -863,7 +863,7 @@ fn misuse_panics() {
 #[test]
 fn static_object_cannot_change_vertex_count() {
     let Some(mut gpu) = headless(sample_config()) else { return };
-    let mut resources = ResourceManager::new();
+    let mut resources = ResourceManager::new(ResourceConfig::for_tests());
     let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), VertexLayout::Position);
     let mut object = new_triangle(&gpu, MemoryUpdateType::Static);
 
@@ -884,7 +884,7 @@ fn static_object_cannot_change_vertex_count() {
 #[test]
 fn draw_manager_3d_accepts_object_3d() {
     let Some(mut gpu) = headless(sample_config()) else { return };
-    let mut resources = ResourceManager::new();
+    let mut resources = ResourceManager::new(ResourceConfig::for_tests());
     let mut manager = DrawManager3D::new(&mut gpu, camera_3d(), VertexLayout::PositionColorUvNormal);
     let mut object = Object3D::new(&gpu);
     object.memory_update_type(MemoryUpdateType::Static).paint_type(PaintType::Fill);

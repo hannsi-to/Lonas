@@ -627,6 +627,7 @@ fn surfaces_use_taa(surfaces: &Slots<SurfaceState>, used: &HashSet<SurfaceId>) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::resource::ResourceConfig;
     use crate::config::tests::sample_config;
 
     // GPU のアダプターがない環境（CI など）では飛ばす
@@ -643,7 +644,7 @@ mod tests {
     #[test]
     fn frames_run_repeatedly_without_surface() {
         let Some(mut gpu) = headless() else { return };
-        let mut resources = ResourceManager::new();
+        let mut resources = ResourceManager::new(ResourceConfig::for_tests());
 
         for frame in 1..=3 {
             gpu.begin_frame();
@@ -667,7 +668,7 @@ mod tests {
     #[test]
     fn other_context_surface_panics() {
         let Some(mut gpu) = headless() else { return };
-        let mut resources = ResourceManager::new();
+        let mut resources = ResourceManager::new(ResourceConfig::for_tests());
         let own = gpu.add_offscreen(4, 4);
         // 番号と世代は同じで、発行元だけが違う ID（2 つ目の GpuContext はテストのロックで同時に作れないため、直接作る）
         let other = SurfaceId(crate::slots::SlotId { owner: own.0.owner.wrapping_add(1), ..own.0 });
@@ -682,7 +683,7 @@ mod tests {
     #[test]
     fn removed_surface_id_is_rejected_after_reuse() {
         let Some(mut gpu) = headless() else { return };
-        let mut resources = ResourceManager::new();
+        let mut resources = ResourceManager::new(ResourceConfig::for_tests());
         let old = gpu.add_offscreen(4, 4);
 
         gpu.remove_surface(old);
@@ -705,7 +706,7 @@ mod tests {
     #[test]
     fn device_lost_is_reported_every_frame() {
         let Some(mut gpu) = headless() else { return };
-        let mut resources = ResourceManager::new();
+        let mut resources = ResourceManager::new(ResourceConfig::for_tests());
         let surface = gpu.add_offscreen(4, 4);
 
         gpu.begin_frame();

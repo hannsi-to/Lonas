@@ -5,8 +5,8 @@ use lonas::lonas::{
     AntiAliasing, Backend, BindingConfig, BindingSlot, Blend, Camera2D, Camera3D, Color, CoordinateSystemConfig, CullMode,
     DrawManager2D, DrawManager3D, FilterMode, GpuContext, Handedness, Instance2D, Instance3D, InstanceId,
     LonasConfig, LonasError, Matrix4f, MemoryCapacity, MemoryConfig, MemoryUpdateType, MotionVectorFormat, Object2D,
-    Object3D, Origin2D, PresentMode, ProjectionMode, Quaternion, ResourceManager, ShaderId, SurfaceDraw, SurfaceId, TaaConfig,
-    TextureAtlasConfig, TextureId, PaintType, Vector2f, Vector3f, Vertex, VertexLayout, Visibility,
+    Object3D, Origin2D, PresentMode, ProjectionMode, Quaternion, ResourceConfig, ResourceManager, ShaderId, SurfaceDraw,
+    SurfaceId, TaaConfig, TextConfig, TextureAtlasConfig, TextureId, PaintType, Vector2f, Vector3f, Vertex, VertexLayout, Visibility,
 };
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::sync::Arc;
@@ -284,7 +284,15 @@ impl TestApplication {
         let (mut gpu, main_surface) = GpuContext::new(window, width, height, config)?;
 
         // シェーダー・テクスチャの登録は GPU に触れない。反映は end_frame（§11 ResourceManager）
-        let mut resource_manager = ResourceManager::new();
+        // ResourceManager がグリフを作るための設定（§13 CPU 側の設定）
+        let mut resource_manager = ResourceManager::new(ResourceConfig {
+            text: TextConfig {
+                sdf_em_size: 48,
+                sdf_range: 8.0,
+                max_new_glyphs_per_frame: Some(64),
+                vector_cache_max_bytes: 64 << 20,
+            },
+        });
         // Lonas が公開する struct の定義を先頭につなげる（§11 シェーダーとの約束事）
         let sprite_shader = resource_manager.register_shader(&format!("{}{}", lonas::wgsl::STRUCTS, SPRITE_WGSL))?; // WGSL の誤りはここで Err
         let mesh_shader = resource_manager.register_shader(&format!("{}{}", lonas::wgsl::STRUCTS, MESH_WGSL))?;

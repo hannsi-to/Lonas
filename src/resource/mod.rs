@@ -1,4 +1,4 @@
-// シェーダーとテクスチャの登録（§11 ResourceManager）
+// シェーダー・テクスチャ・フォントの登録（§11 ResourceManager・§13 フォントの登録）
 // CPU 側の処理だけを行い、GPU には触れない。GPU 上の実体は end_frame で GpuContext が作る（§11 GPU との分担）
 #![allow(dead_code)] // GpuContext 向けの関数は段階 4〜7 で使う
 
@@ -10,6 +10,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use crate::error::LonasError;
 use shader::{CheckedShader, ShaderReflection, check_wgsl};
 use crate::slots::{SlotId, Slots};
+#[cfg(feature = "text")]
+use crate::text::{FontData, TextConfig};
 pub(crate) use texture::TextureData;
 
 // ResourceManager ごとの識別子。別の ResourceManager の ID を見分ける（§11 ID）
@@ -20,6 +22,17 @@ pub struct ShaderId(SlotId);
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TextureId(SlotId);
+
+#[cfg(feature = "text")]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FontId(SlotId);
+
+// ResourceManager::new に渡す設定（§13 CPU 側の設定）。LonasConfig と同じく既定値を設けない（§3）
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResourceConfig {
+    #[cfg(feature = "text")]
+    pub text: TextConfig,
+}
 
 impl ShaderId {
     pub(crate) fn index(self) -> u32 {
@@ -60,17 +73,20 @@ pub struct ResourceManager {
     id: u32,
     shaders: Slots<ShaderEntry>,
     textures: Slots<TextureEntry>,
+    #[cfg(feature = "text")]
+    fonts: Slots<FontData>,
+    #[cfg(feature = "text")]
+    text_config: TextConfig,
     changes: Vec<ResourceChange>,
 }
 
-impl Default for ResourceManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl ResourceManager {
-    pub fn new() -> Self {
+    // 値が不正なら panic（§13 CPU 側の設定）
+    #[cfg_attr(not(feature = "text"), allow(unused_variables))] // text feature を外すと設定の項目がない
+    pub fn new(config: ResourceConfig) -> Self {
+        #[cfg(feature = "text")]
+        config.text.validate();
+
         let id = NEXT_RESOURCE_MANAGER_ID.fetch_add(1, Ordering::Relaxed);
 
         Self {
@@ -78,6 +94,10 @@ impl ResourceManager {
             shaders: Slots::new(id, 0),
             // 番号 0 はテクスチャ未指定（ピンク紫の画素）のために予約する
             textures: Slots::new(id, 1),
+            #[cfg(feature = "text")]
+            fonts: Slots::new(id, 0),
+            #[cfg(feature = "text")]
+            text_config: config.text,
             changes: Vec::new(),
         }
     }
@@ -136,6 +156,37 @@ impl ResourceManager {
         let entry = self.texture_entry(id);
 
         (entry.width, entry.height)
+    }
+
+    // TrueType / OpenType のフォントを登録する。読めなければ Err（§13 フォントの登録）
+    #[cfg(feature = "text")]
+    pub fn register_font(&mut self, bytes: impl Into<Vec<u8>>) -> Result<FontId, LonasError> {
+        let font = FontData::new(bytes.into()).ok_or(LonasError::InvalidFont)?;
+
+        Ok(FontId(self.fonts.insert(font)))
+    }
+
+    // 呼んだ時点で ID を無効にする。無効な ID を使う TextStyle は layout_text で panic
+    #[cfg(feature = "text")]
+    pub fn unregister_font(&mut self, id: FontId) {
+        self.check_owner(id.0, "FontId");
+        self.fonts.remove(id.0).expect("登録解除済みの FontId を解除しました");
+    }
+
+    #[cfg(feature = "text")]
+    pub fn is_font_valid(&self, id: FontId) -> bool {
+        id.0.owner == self.id && self.fonts.get(id.0).is_some()
+    }
+
+    #[cfg(feature = "text")]
+    pub(crate) fn font(&self, id: FontId) -> &FontData {
+        self.check_owner(id.0, "FontId");
+        self.fonts.get(id.0).expect("登録解除済みの FontId です")
+    }
+
+    #[cfg(feature = "text")]
+    pub(crate) fn text_config(&self) -> &TextConfig {
+        &self.text_config
     }
 
     // ---- end_frame（GpuContext）が使う ----
@@ -206,6 +257,22 @@ fn remove_pending(changes: &mut Vec<ResourceChange>, change: ResourceChange) -> 
 }
 
 #[cfg(test)]
+impl ResourceConfig {
+    // テスト用の設定
+    pub(crate) fn for_tests() -> Self {
+        Self {
+            #[cfg(feature = "text")]
+            text: TextConfig {
+                sdf_em_size: 48,
+                sdf_range: 8.0,
+                max_new_glyphs_per_frame: Some(64),
+                vector_cache_max_bytes: 64 << 20,
+            },
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::wgsl::STRUCTS;
@@ -218,7 +285,7 @@ mod tests {
 
     #[test]
     fn registers_valid_shader_and_rejects_invalid() {
-        let mut resources = ResourceManager::new();
+        let mut resources = ResourceManager::new(ResourceConfig::for_tests());
 
         assert!(resources.register_shader("fn main( {").is_err());
 
@@ -231,7 +298,7 @@ mod tests {
 
     #[test]
     fn texture_slots_start_at_one() {
-        let mut resources = ResourceManager::new();
+        let mut resources = ResourceManager::new(ResourceConfig::for_tests());
         let id = resources.register_texture_rgba(2, 2, &pixels(2, 2)).unwrap();
 
         assert_eq!(id.slot(), 1);
@@ -241,12 +308,12 @@ mod tests {
     #[test]
     #[should_panic(expected = "画像の大きさとバイト列の長さが合いません")]
     fn rgba_length_mismatch_panics() {
-        ResourceManager::new().register_texture_rgba(2, 2, &[0; 15]).unwrap();
+        ResourceManager::new(ResourceConfig::for_tests()).register_texture_rgba(2, 2, &[0; 15]).unwrap();
     }
 
     #[test]
     fn unregister_invalidates_and_reuses_slot_with_new_generation() {
-        let mut resources = ResourceManager::new();
+        let mut resources = ResourceManager::new(ResourceConfig::for_tests());
         let old = resources.register_texture_rgba(1, 1, &pixels(1, 1)).unwrap();
         resources.take_changes();
 
@@ -267,7 +334,7 @@ mod tests {
 
     #[test]
     fn unregister_before_end_frame_cancels_registration() {
-        let mut resources = ResourceManager::new();
+        let mut resources = ResourceManager::new(ResourceConfig::for_tests());
         let id = resources.register_shader(VALID).unwrap();
 
         resources.unregister_shader(id);
@@ -278,7 +345,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "登録解除済みの ShaderId を解除しました")]
     fn double_unregister_panics() {
-        let mut resources = ResourceManager::new();
+        let mut resources = ResourceManager::new(ResourceConfig::for_tests());
         let id = resources.register_shader(VALID).unwrap();
 
         resources.unregister_shader(id);
@@ -287,8 +354,8 @@ mod tests {
 
     #[test]
     fn ids_from_other_manager_are_distinguished() {
-        let mut a = ResourceManager::new();
-        let b = ResourceManager::new();
+        let mut a = ResourceManager::new(ResourceConfig::for_tests());
+        let b = ResourceManager::new(ResourceConfig::for_tests());
         let id = a.register_shader(VALID).unwrap();
 
         assert!(a.owns_shader(id));
@@ -298,7 +365,7 @@ mod tests {
 
     #[test]
     fn texture_data_is_taken_once() {
-        let mut resources = ResourceManager::new();
+        let mut resources = ResourceManager::new(ResourceConfig::for_tests());
         let id = resources.register_texture_rgba(1, 1, &pixels(1, 1)).unwrap();
 
         assert!(resources.take_texture_data(id).is_some());
@@ -316,7 +383,7 @@ mod tests {
             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .unwrap();
 
-        let mut resources = ResourceManager::new();
+        let mut resources = ResourceManager::new(ResourceConfig::for_tests());
         let id = resources.register_texture(&png).unwrap();
 
         assert_eq!(resources.take_texture_data(id).unwrap().pixels, vec![255, 0, 0, 255]);

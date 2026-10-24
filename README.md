@@ -25,7 +25,9 @@ wgpu の上に作った、2D / 3D の描画ライブラリです。
 use lonas::lonas::*;
 
 let (mut gpu, surface) = GpuContext::new(window, width, height, config)?;
-let mut resources = ResourceManager::new();
+let mut resources = ResourceManager::new(ResourceConfig {
+    text: TextConfig { sdf_em_size: 48, sdf_range: 8.0, max_new_glyphs_per_frame: Some(64), vector_cache_max_bytes: 64 << 20 },
+});
 let shader = resources.register_shader(&format!("{}{}", wgsl::STRUCTS, MY_WGSL))?;
 let mut draw_manager = DrawManager2D::new(&mut gpu, camera, VertexLayout::PositionColor);
 let mut object = Object2D::new(&gpu);

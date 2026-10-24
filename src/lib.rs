@@ -13,6 +13,8 @@ pub mod object;
 pub(crate) mod render;
 pub mod resource;
 pub(crate) mod slots;
+#[cfg(feature = "text")]
+pub mod text;
 pub(crate) mod texture;
 pub mod vertex;
 pub mod wgsl;
