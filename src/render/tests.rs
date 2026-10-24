@@ -9,7 +9,7 @@ use crate::gpu::{GpuContext, SurfaceDraw, SurfaceId};
 use crate::instance::{Instance2D, Instance3D, Visibility};
 use crate::math::{Matrix4f, Quaternion, Vector2f, Vector3f};
 use crate::memory::MemoryUpdateType;
-use crate::object::{Dash, JointType, Object2D, Object3D, Topology};
+use crate::object::{Dash, JointType, Object2D, Object3D, PaintType};
 use crate::resource::{ResourceManager, ShaderId};
 use crate::vertex::{Vertex, VertexLayout};
 use crate::wgsl::STRUCTS;
@@ -99,7 +99,7 @@ fn square_2d(object: &mut Object2D, size: f32) {
 
 fn square_object_2d(scene: &Scene, color: Color, position: Vector2f) -> Object2D {
     let mut object = Object2D::new(&scene.gpu);
-    object.memory_update_type(MemoryUpdateType::Dynamic).topology(Topology::TriangleFan).shader(scene.shader).cull_mode(CullMode::None);
+    object.memory_update_type(MemoryUpdateType::Dynamic).paint_type(PaintType::Fill).shader(scene.shader).cull_mode(CullMode::None);
     object.add_instance(Instance2D { position, color, ..Instance2D::default() });
     object
 }
@@ -131,7 +131,7 @@ fn draw_stroke(scene: &mut Scene, joint_type: JointType, dash: Option<Dash>) -> 
     let mut object = Object2D::new(&scene.gpu);
     object
         .memory_update_type(MemoryUpdateType::Dynamic)
-        .topology(Topology::Stroke { line_width: 4.0, joint_type, strip: true, dash })
+        .paint_type(PaintType::Stroke { line_width: 4.0, joint_type, strip: true, dash })
         .shader(scene.shader);
     object.add_instance(Instance2D::default());
 
@@ -183,17 +183,17 @@ fn stroke_draws_dashes() {
 
 // ---- 形の区切り（§10）----
 
-// 8〜24 と 40〜56 の正方形を TriangleFan で描く。split なら begin_shape() で 2 つの形に分ける
-fn draw_two_squares(scene: &mut Scene, split: bool) -> Vec<[u8; 4]> {
+// 8〜24 と 40〜56 の正方形を、begin_shape() で区切った 2 つの形として Fill で描く
+fn draw_two_squares(scene: &mut Scene) -> Vec<[u8; 4]> {
     let mut manager = manager_2d(scene);
     let mut object = Object2D::new(&scene.gpu);
-    object.memory_update_type(MemoryUpdateType::Dynamic).topology(Topology::TriangleFan).shader(scene.shader);
+    object.memory_update_type(MemoryUpdateType::Dynamic).paint_type(PaintType::Fill).shader(scene.shader);
     object.add_instance(Instance2D::default());
 
     scene.gpu.begin_frame();
     object.begin();
     for (i, left) in [8.0, 40.0].into_iter().enumerate() {
-        if i == 1 && split {
+        if i == 1 {
             object.begin_shape();
         }
         for (x, y) in [(left, 24.0), (left + 16.0, 24.0), (left + 16.0, 40.0), (left, 40.0)] {
@@ -215,23 +215,19 @@ fn draw_two_squares(scene: &mut Scene, split: bool) -> Vec<[u8; 4]> {
 fn begin_shape_draws_separate_shapes() {
     let Some(mut scene) = scene(SHADER_2D) else { return };
 
-    let split = draw_two_squares(&mut scene, true);
+    let split = draw_two_squares(&mut scene);
     assert_color(pixel(&split, 16, 32), [255, 255, 255], "1 つ目の正方形");
     assert_color(pixel(&split, 48, 32), [255, 255, 255], "2 つ目の正方形");
     assert_color(pixel(&split, 32, 32), [0, 0, 0], "正方形の間");
-
-    // 区切らなければ 8 頂点の 1 つの扇形になり、間も塗られる
-    let joined = draw_two_squares(&mut scene, false);
-    assert_color(pixel(&joined, 32, 32), [255, 255, 255], "区切らない場合の正方形の間");
 }
 
 // ---- 穴のある多角形（§10）----
 
 // 16〜48 の白い正方形に、28〜36 の正方形の穴を空けて描く。cull_mode は既定（Back）
-fn draw_with_hole(scene: &mut Scene, topology: Topology) -> Vec<[u8; 4]> {
+fn draw_with_hole(scene: &mut Scene, paint_type: PaintType) -> Vec<[u8; 4]> {
     let mut manager = manager_2d(scene);
     let mut object = Object2D::new(&scene.gpu);
-    object.memory_update_type(MemoryUpdateType::Dynamic).topology(topology).shader(scene.shader);
+    object.memory_update_type(MemoryUpdateType::Dynamic).paint_type(paint_type).shader(scene.shader);
     object.add_instance(Instance2D::default());
 
     scene.gpu.begin_frame();
@@ -257,7 +253,7 @@ fn draw_with_hole(scene: &mut Scene, topology: Topology) -> Vec<[u8; 4]> {
 #[test]
 fn polygon_hole_is_not_filled() {
     let Some(mut scene) = scene(SHADER_2D) else { return };
-    let pixels = draw_with_hole(&mut scene, Topology::Polygon);
+    let pixels = draw_with_hole(&mut scene, PaintType::Fill);
 
     assert_color(pixel(&pixels, 20, 20), [255, 255, 255], "穴の外");
     assert_color(pixel(&pixels, 44, 40), [255, 255, 255], "穴の外");
@@ -268,7 +264,7 @@ fn polygon_hole_is_not_filled() {
 #[test]
 fn stroke_outlines_holes() {
     let Some(mut scene) = scene(SHADER_2D) else { return };
-    let stroke = Topology::Stroke { line_width: 2.0, joint_type: JointType::Miter, strip: false, dash: None };
+    let stroke = PaintType::Stroke { line_width: 2.0, joint_type: JointType::Miter, strip: false, dash: None };
     let pixels = draw_with_hole(&mut scene, stroke);
 
     assert_color(pixel(&pixels, 16, 32), [255, 255, 255], "外周の線");
@@ -394,7 +390,7 @@ fn quad_3d(scene: &Scene, color: Color, z: f32, blend: Blend) -> Object3D {
     let mut object = Object3D::new(&scene.gpu);
     object
         .memory_update_type(MemoryUpdateType::Static)
-        .topology(Topology::TriangleFan)
+        .paint_type(PaintType::Fill)
         .shader(scene.shader)
         .blend(blend)
         .cull_mode(CullMode::None);
@@ -518,7 +514,7 @@ fn fs(in: VertexOut) -> @location(0) vec4<f32> { return uniforms[in.uniform_inde
 
 fn textured_square(scene: &Scene, position: Vector2f) -> Object2D {
     let mut object = Object2D::new(&scene.gpu);
-    object.memory_update_type(MemoryUpdateType::Static).topology(Topology::TriangleFan).shader(scene.shader).cull_mode(CullMode::None);
+    object.memory_update_type(MemoryUpdateType::Static).paint_type(PaintType::Fill).shader(scene.shader).cull_mode(CullMode::None);
     object.add_instance(Instance2D { position, ..Instance2D::default() });
     object
 }
@@ -650,7 +646,7 @@ struct Tint {
 
 fn uniform_square(scene: &Scene, position: Vector2f, color: [f32; 4]) -> Object2D {
     let mut object = Object2D::new(&scene.gpu);
-    object.memory_update_type(MemoryUpdateType::Static).topology(Topology::TriangleFan).shader(scene.shader).cull_mode(CullMode::None);
+    object.memory_update_type(MemoryUpdateType::Static).paint_type(PaintType::Fill).shader(scene.shader).cull_mode(CullMode::None);
     object.uniform(&Tint { color });
     object.add_instance(Instance2D { position, ..Instance2D::default() });
     object
@@ -715,7 +711,7 @@ fn edge_scene() -> Option<(Scene, DrawManager2D, Object2D)> {
     let mut scene = scene(SHADER_2D)?;
     let manager = manager_2d(&mut scene);
     let mut object = Object2D::new(&scene.gpu);
-    object.memory_update_type(MemoryUpdateType::Static).topology(Topology::TriangleList).shader(scene.shader).cull_mode(CullMode::None);
+    object.memory_update_type(MemoryUpdateType::Static).paint_type(PaintType::Fill).shader(scene.shader).cull_mode(CullMode::None);
     object.add_instance(Instance2D::default());
 
     Some((scene, manager, object))

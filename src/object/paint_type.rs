@@ -1,5 +1,5 @@
-// 三角形化：index() を呼ばない Object* のインデックスを作る（§10 三角形化：topology）
-// GPU に送るプリミティブは常に三角形。Stroke 以外はインデックスの作り方だけを選ぶ。Stroke は頂点も作る（stroke.rs）
+// 塗り方：index() を呼ばない Object* のインデックスを作る（§10 塗り方：PaintType）
+// GPU に送るプリミティブは常に三角形。Fill はインデックスだけを作り、Stroke は頂点も作る（stroke.rs）
 
 use std::ops::Range;
 
@@ -7,15 +7,9 @@ use crate::math::{Vector2f, Vector3f};
 
 // Stroke が f32 を持つため Eq / Hash は実装しない
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub enum Topology {
-    // 3 つずつで 1 つの三角形
-    TriangleList,
-    // 凸多角形の外周
-    TriangleFan,
-    // 帯状に続く三角形
-    TriangleStrip,
-    // へこみのある多角形の外周（単調多角形分割）
-    Polygon,
+pub enum PaintType {
+    // 頂点を外周とする多角形を塗る（単調多角形分割）。へこみ・穴（begin_hole）があってもよい
+    Fill,
     // 頂点を線の中心として、太さのある線にする（§10 線：Stroke）。xy 平面で広げ、z は頂点ごとの値を保つ
     Stroke {
         /// 線の太さ。頂点と同じ単位（ピクセル座標なら px）。
@@ -73,10 +67,10 @@ pub struct Dash {
     pub offset: f32,
 }
 
-impl Topology {
+impl PaintType {
     // 値の検査。不正なら panic（§3 設定の値の検査）
     pub(crate) fn validate(&self) {
-        let Topology::Stroke { line_width, dash, .. } = *self else { return };
+        let PaintType::Stroke { line_width, dash, .. } = *self else { return };
 
         assert!(line_width.is_finite() && line_width > 0.0, "Stroke の line_width は 0 より大きい有限の値にしてください（{line_width}）");
 
@@ -88,15 +82,15 @@ impl Topology {
     }
 }
 
-// 生成したインデックスと、頂点数が分け方に合わなかったか
+// 生成したインデックスと、描かなかった形があるか
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Generated {
     pub indices: Vec<u32>,
-    // 三角形に含めなかった頂点がある（log で警告する、§10）
+    // 外周の頂点が 3 個未満で描かなかった形がある（log で警告する、§10）
     pub has_leftover: bool,
 }
 
-// 生成する三角形の向き（§10 Polygon の頂点の向き）
+// 生成する三角形の向き（§10 Fill の頂点の向き）
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Winding {
     // 2D：入力の向きによらず、xy 平面で反時計回りに揃える
@@ -168,45 +162,29 @@ fn close_ring(shape: &mut Shape, ring: Range<usize>, is_hole: bool) {
     }
 }
 
-// breaks は begin_shape() / begin_hole() の区切り。形ごとに別々にインデックスを作る
-// 穴は Polygon だけが使い、他の分け方は各形の外周の頂点だけを使う
-pub(crate) fn generate(topology: Topology, positions: &[Vector3f], breaks: &[Break], winding: Winding) -> Generated {
+// Fill のインデックスを、形ごとに別々に作る。breaks は begin_shape() / begin_hole() の区切り
+pub(crate) fn fill(positions: &[Vector3f], breaks: &[Break], winding: Winding) -> Generated {
     let mut generated = Generated { indices: Vec::new(), has_leftover: false };
 
     for shape in shapes(positions.len(), breaks) {
-        let base = shape.outer.start as u32;
-        let count = shape.outer.len() as u32;
-
-        if count < 3 {
-            // どの分け方でも、外周の頂点が 3 個未満の形は描かない
-            generated.has_leftover |= count > 0;
+        if shape.outer.len() < 3 {
+            // 外周の頂点が 3 個未満の形は描かない
+            generated.has_leftover |= !shape.outer.is_empty();
             continue;
         }
 
-        match topology {
-            Topology::TriangleList => {
-                generated.indices.extend((0..count / 3 * 3).map(|i| base + i));
-                generated.has_leftover |= !count.is_multiple_of(3);
-            }
-            Topology::TriangleFan => generated.indices.extend((1..count - 1).flat_map(|i| [base, base + i, base + i + 1])),
-            // 向きを揃えるため 1 つおきに入れ替える
-            Topology::TriangleStrip => generated.indices.extend(
-                (0..count - 2).flat_map(|i| if i % 2 == 0 { [i, i + 1, i + 2] } else { [i + 1, i, i + 2] }).map(|i| base + i),
-            ),
-            Topology::Polygon => {
-                let local = shape.outer.start;
-                let rings: Vec<Range<usize>> = shape.rings().map(|ring| ring.start - local..ring.end - local).collect();
+        let base = shape.outer.start;
+        let rings: Vec<Range<usize>> = shape.rings().map(|ring| ring.start - base..ring.end - base).collect();
 
-                generated.indices.extend(triangulate_polygon(&positions[local..shape.end()], &rings, winding).into_iter().map(|i| base + i));
-            }
-            Topology::Stroke { .. } => unreachable!("Stroke は頂点も作るため stroke::tessellate で三角形化する"),
-        }
+        generated
+            .indices
+            .extend(triangulate_polygon(&positions[base..shape.end()], &rings, winding).into_iter().map(|i| (base + i as usize) as u32));
     }
 
     generated
 }
 
-// ---- Polygon：単調多角形分割（§10 Polygon の分割方法）----
+// ---- Fill：単調多角形分割（§10 Fill の分割方法）----
 
 // 輪ごとの前後の頂点。辺 i は頂点 i → next[i]
 struct Links {
@@ -616,37 +594,21 @@ mod tests {
     }
 
     #[test]
-    fn simple_topologies() {
-        let six = points(&[(0.0, 0.0); 6]);
+    fn fewer_than_three_vertices_draw_nothing() {
+        for count in 1..3 {
+            let generated = fill(&points(&[(0.0, 0.0), (1.0, 0.0)][..count]), &[], Winding::CounterClockwiseXy);
+            assert!(generated.indices.is_empty() && generated.has_leftover);
+        }
 
-        assert_eq!(generate(Topology::TriangleList, &six, &[], Winding::CounterClockwiseXy).indices, [0, 1, 2, 3, 4, 5]);
-        assert_eq!(
-            generate(Topology::TriangleFan, &six, &[], Winding::CounterClockwiseXy).indices,
-            [0, 1, 2, 0, 2, 3, 0, 3, 4, 0, 4, 5],
-        );
-        assert_eq!(
-            generate(Topology::TriangleStrip, &six[..5], &[], Winding::CounterClockwiseXy).indices,
-            [0, 1, 2, 2, 1, 3, 2, 3, 4],
-        );
-    }
-
-    #[test]
-    fn leftover_vertices_are_dropped() {
-        let seven = points(&[(0.0, 0.0); 7]);
-        let generated = generate(Topology::TriangleList, &seven, &[], Winding::CounterClockwiseXy);
-
-        assert_eq!(generated.indices.len(), 6);
-        assert!(generated.has_leftover);
-
-        let two = generate(Topology::TriangleFan, &seven[..2], &[], Winding::CounterClockwiseXy);
-        assert!(two.indices.is_empty() && two.has_leftover);
+        let empty = fill(&[], &[], Winding::CounterClockwiseXy);
+        assert!(empty.indices.is_empty() && !empty.has_leftover);
     }
 
     // 三角形の面積の合計が多角形の面積と一致し、どの三角形も反時計回り
     fn check_polygon(xy: &[(f32, f32)]) {
         let positions = points(xy);
         let projected: Vec<Vector2f> = positions.iter().map(|p| Vector2f::new(p.x, p.y)).collect();
-        let indices = generate(Topology::Polygon, &positions, &[], Winding::CounterClockwiseXy).indices;
+        let indices = fill(&positions, &[], Winding::CounterClockwiseXy).indices;
 
         assert_eq!(indices.len(), (xy.len() - 2) * 3, "三角形の数は頂点数 - 2");
         assert!((area_of_triangles(&positions, &indices) - signed_area(&projected).abs()).abs() < 1e-3);
@@ -723,7 +685,7 @@ mod tests {
     }
 
     #[test]
-    fn polygon_3d_follows_input_winding() {
+    fn fill_3d_follows_input_winding() {
         // xz 平面上の四角形（y = 1）
         let square = [
             Vector3f::new(0.0, 1.0, 0.0),
@@ -736,9 +698,9 @@ mod tests {
             (b - a).cross(c - a)
         };
 
-        let forward = generate(Topology::Polygon, &square, &[], Winding::FollowInput).indices;
+        let forward = fill(&square, &[], Winding::FollowInput).indices;
         let reversed_square: Vec<Vector3f> = square.iter().rev().copied().collect();
-        let backward = generate(Topology::Polygon, &reversed_square, &[], Winding::FollowInput).indices;
+        let backward = fill(&reversed_square, &[], Winding::FollowInput).indices;
 
         assert_eq!(forward.len(), 6);
         // 入力の向きが逆なら、三角形の表も逆になる
@@ -746,7 +708,7 @@ mod tests {
         assert!(normal_of(&backward, &reversed_square).y < 0.0);
     }
 
-    // ---- 穴のある多角形 ----
+    // ---- 穴 ----
 
     // 左下 (x, y)、一辺 size の正方形。clockwise なら時計回り
     fn square(x: f32, y: f32, size: f32, clockwise: bool) -> Vec<(f32, f32)> {
@@ -770,7 +732,7 @@ mod tests {
     // 三角形がすべて反時計回りで、面積が expected_area、数が頂点数 + 2 × 穴の数 - 2 で、
     // どの三角形の重心も穴（正方形 (x, y, size)）の外にあることを確かめる
     fn assert_holes_triangulated(positions: &[Vector3f], starts: &[Break], hole_squares: &[(f32, f32, f32)], expected_area: f32) {
-        let indices = generate(Topology::Polygon, positions, starts, Winding::CounterClockwiseXy).indices;
+        let indices = fill(positions, starts, Winding::CounterClockwiseXy).indices;
         let xy = |i: u32| Vector2f::new(positions[i as usize].x, positions[i as usize].y);
 
         assert_eq!(indices.len() / 3, positions.len() + 2 * hole_squares.len() - 2);
@@ -809,7 +771,7 @@ mod tests {
     }
 
     #[test]
-    fn polygon_with_one_hole() {
+    fn fill_with_one_hole() {
         // 穴の向きは時計回りでも反時計回りでも同じ結果になる
         for clockwise in [true, false] {
             let (positions, starts) = with_holes(&square(0.0, 0.0, 10.0, false), &[square(4.0, 4.0, 2.0, clockwise)]);
@@ -850,64 +812,41 @@ mod tests {
             &[vec![(1.0, 1.0), (2.0, 2.0)], vec![(3.0, 3.0), (4.0, 4.0), (5.0, 5.0)]],
         );
         starts.push(Break::Hole(positions.len()));
-        let indices = generate(Topology::Polygon, &positions, &starts, Winding::CounterClockwiseXy).indices;
+        let indices = fill(&positions, &starts, Winding::CounterClockwiseXy).indices;
 
         assert_eq!(indices.len(), 6);
         assert!((area_of_triangles(&positions, &indices) - 100.0).abs() < 1e-4);
     }
 
-    #[test]
-    fn other_topologies_use_only_the_outer_ring() {
-        let (positions, starts) = with_holes(&square(0.0, 0.0, 10.0, false), &[square(4.0, 4.0, 2.0, false)]);
-
-        assert_eq!(generate(Topology::TriangleFan, &positions, &starts, Winding::CounterClockwiseXy).indices, [0, 1, 2, 0, 2, 3]);
-        assert_eq!(generate(Topology::TriangleList, &positions, &starts, Winding::CounterClockwiseXy).indices, [0, 1, 2]);
-    }
-
     // ---- 形の区切り ----
 
     #[test]
-    fn every_topology_restarts_at_each_shape() {
-        // 三角形を 2 つ並べ、begin_shape() で区切る
-        let two_triangles = points(&[(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (5.0, 0.0), (6.0, 0.0), (5.0, 1.0)]);
-        let split = [Break::Shape(3)];
-        let indices = |topology| generate(topology, &two_triangles, &split, Winding::CounterClockwiseXy).indices;
+    fn each_shape_is_filled_separately() {
+        // 正方形を 2 つ並べ、begin_shape() で区切る。どの三角形も 1 つの形の頂点だけを使う
+        let mut corners = square(0.0, 0.0, 1.0, false);
+        corners.extend(square(5.0, 0.0, 1.0, false));
+        let positions = points(&corners);
+        let indices = fill(&positions, &[Break::Shape(4)], Winding::CounterClockwiseXy).indices;
 
-        for topology in [Topology::TriangleList, Topology::TriangleFan, Topology::TriangleStrip, Topology::Polygon] {
-            assert_eq!(indices(topology), [0, 1, 2, 3, 4, 5], "{topology:?}");
-        }
-
-        // 区切らなければ、Fan と Strip は 1 つの形として 6 頂点をつなぐ
-        assert_eq!(generate(Topology::TriangleFan, &two_triangles, &[], Winding::CounterClockwiseXy).indices.len(), 4 * 3);
+        assert_eq!(indices.len() / 3, 2 * 2);
+        assert!(indices.chunks(3).all(|t| t.iter().all(|&i| i < 4) || t.iter().all(|&i| i >= 4)));
+        assert!((area_of_triangles(&positions, &indices) - 2.0).abs() < 1e-4);
     }
 
     #[test]
-    fn fans_and_strips_per_shape() {
-        // 四角形（4 頂点）と五角形（5 頂点）。Fan は各形の最初の頂点を中心にする
-        let positions = points(&[(0.0, 0.0); 9]);
-        let fan = generate(Topology::TriangleFan, &positions, &[Break::Shape(4)], Winding::CounterClockwiseXy).indices;
-        let strip = generate(Topology::TriangleStrip, &positions, &[Break::Shape(4)], Winding::CounterClockwiseXy).indices;
+    fn short_shapes_are_skipped() {
+        // 三角形・2 頂点・三角形。2 頂点の形だけ描かない
+        let positions = points(&[(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (3.0, 0.0), (4.0, 0.0), (5.0, 0.0), (6.0, 0.0), (5.0, 1.0)]);
+        let generated = fill(&positions, &[Break::Shape(3), Break::Shape(5)], Winding::CounterClockwiseXy);
+        let mut used: Vec<u32> = generated.indices.clone();
+        used.sort_unstable();
 
-        assert_eq!(fan, [0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7, 4, 7, 8]);
-        assert_eq!(strip, [0, 1, 2, 2, 1, 3, 4, 5, 6, 6, 5, 7, 6, 7, 8]);
-    }
-
-    #[test]
-    fn leftover_vertices_are_counted_per_shape() {
-        // 4 頂点と 3 頂点。TriangleList は 1 つ目の形の余り 1 個だけを捨てる
-        let positions = points(&[(0.0, 0.0); 7]);
-        let generated = generate(Topology::TriangleList, &positions, &[Break::Shape(4)], Winding::CounterClockwiseXy);
-
-        assert_eq!(generated.indices, [0, 1, 2, 4, 5, 6]);
+        assert_eq!(used, [0, 1, 2, 5, 6, 7]);
         assert!(generated.has_leftover);
-        // 頂点が 3 個未満の形は描かない
-        let short = generate(Topology::TriangleFan, &positions, &[Break::Shape(2), Break::Shape(5)], Winding::CounterClockwiseXy);
-        assert_eq!(short.indices, [2, 3, 4]);
-        assert!(short.has_leftover);
     }
 
     #[test]
-    fn polygons_with_holes_per_shape() {
+    fn fills_with_holes_per_shape() {
         // 穴のある正方形を 2 つ。それぞれの穴は、その形にだけ空く
         let mut corners = square(0.0, 0.0, 10.0, false);
         corners.extend(square(4.0, 4.0, 2.0, true));
@@ -915,7 +854,7 @@ mod tests {
         corners.extend(square(24.0, 4.0, 2.0, true));
         let positions = points(&corners);
         let breaks = [Break::Hole(4), Break::Shape(8), Break::Hole(12)];
-        let indices = generate(Topology::Polygon, &positions, &breaks, Winding::CounterClockwiseXy).indices;
+        let indices = fill(&positions, &breaks, Winding::CounterClockwiseXy).indices;
 
         assert_eq!(indices.len() / 3, 2 * (8 + 2 - 2));
         assert!((area_of_triangles(&positions, &indices) - 2.0 * 96.0).abs() < 1e-3);
@@ -924,13 +863,13 @@ mod tests {
     }
 
     #[test]
-    fn polygon_3d_with_hole_follows_input_winding() {
+    fn fill_3d_with_hole_follows_input_winding() {
         // xz 平面（y = 1）の外周と穴。外周の入力の向きで表が決まる
         let outer = [(0.0, 0.0), (0.0, 10.0), (10.0, 10.0), (10.0, 0.0)];
         let hole = [(4.0, 4.0), (6.0, 4.0), (6.0, 6.0), (4.0, 6.0)];
         let to_xz = |(x, z): (f32, f32)| Vector3f::new(x, 1.0, z);
         let positions: Vec<Vector3f> = outer.iter().chain(&hole).copied().map(to_xz).collect();
-        let indices = generate(Topology::Polygon, &positions, &[Break::Hole(4)], Winding::FollowInput).indices;
+        let indices = fill(&positions, &[Break::Hole(4)], Winding::FollowInput).indices;
 
         assert_eq!(indices.len() / 3, 8 + 2 - 2);
         for t in indices.chunks(3) {
