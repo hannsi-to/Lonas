@@ -10,7 +10,7 @@ use crate::instance::{Instance2D, Instance3D, Visibility};
 use crate::math::{Matrix4f, Quaternion, Vector2f, Vector3f};
 use crate::memory::MemoryUpdateType;
 use crate::object::{Dash, JointType, Object2D, Object3D, PaintType};
-use crate::resource::{ResourceManager, ShaderId};
+use crate::resource::{ResourceConfig, ResourceManager, ShaderId};
 use crate::vertex::{Vertex, VertexLayout};
 use crate::wgsl::STRUCTS;
 
@@ -74,7 +74,7 @@ fn scene(shader: &str) -> Option<Scene> {
         }
     };
     let surface = gpu.add_offscreen(SIZE, SIZE);
-    let mut resources = ResourceManager::new();
+    let mut resources = ResourceManager::new(ResourceConfig::for_tests());
     let shader = resources.register_shader(&format!("{STRUCTS}{shader}")).unwrap();
 
     Some(Scene { gpu, surface, resources, shader })
@@ -645,7 +645,7 @@ fn atlas_grows_layers_and_keeps_contents() {
 
     let Ok(mut gpu) = GpuContext::new_headless(config) else { return };
     let surface = gpu.add_offscreen(SIZE, SIZE);
-    let mut resources = ResourceManager::new();
+    let mut resources = ResourceManager::new(ResourceConfig::for_tests());
     let shader = resources.register_shader(&format!("{STRUCTS}{SHADER_TEXTURED}")).unwrap();
     let mut scene = Scene { gpu, surface, resources, shader };
     let mut manager = manager_uv(&mut scene);

@@ -2,8 +2,25 @@
 
 use lonas::lonas::{
     AntiAliasing, Backend, BindingConfig, BindingSlot, Blend, CoordinateSystemConfig, CullMode, FilterMode, Handedness,
-    LonasConfig, MemoryCapacity, MemoryConfig, MotionVectorFormat, Origin2D, PresentMode, TaaConfig, TextureAtlasConfig,
+    LonasConfig, MemoryCapacity, MemoryConfig, MotionVectorFormat, Origin2D, PresentMode, ResourceConfig, TaaConfig,
+    TextureAtlasConfig,
 };
+#[cfg(feature = "text")]
+use lonas::lonas::TextConfig;
+
+// ResourceManager::new に渡す設定。こちらも既定値を持たない（§13 CPU 側の設定）
+pub fn resource_config() -> ResourceConfig {
+    ResourceConfig {
+        // text feature を外した場合、この項目はない
+        #[cfg(feature = "text")]
+        text: TextConfig {
+            sdf_em_size: 48,
+            sdf_range: 8.0,
+            max_new_glyphs_per_frame: Some(64),
+            vector_cache_max_bytes: 64 << 20,
+        },
+    }
+}
 
 pub fn config() -> LonasConfig {
     LonasConfig {

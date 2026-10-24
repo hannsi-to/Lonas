@@ -101,7 +101,7 @@ impl State {
     fn new(window: Arc<Window>) -> Self {
         let size = window.inner_size();
         let (mut gpu, surface) = GpuContext::new(window.clone(), size.width, size.height, common::config()).unwrap();
-        let mut resources = ResourceManager::new();
+        let mut resources = ResourceManager::new(common::resource_config());
         let shader_2d = resources.register_shader(&format!("{}{}", wgsl::STRUCTS, SHADER_2D)).unwrap();
 
         let manager_2d = DrawManager2D::new(

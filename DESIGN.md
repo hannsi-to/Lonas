@@ -1948,6 +1948,7 @@ pub enum LonasError {
     // 登録時の入力（§11 ResourceManager）
     InvalidShader { message: String },  // naga の検査結果
     ImageDecode(image::ImageError),     // image の feature が有効な場合のみ
+    InvalidFont,                        // フォントとして読めない（§13 フォントの登録。text の feature が有効な場合のみ）
 }
 ```
 
@@ -2289,6 +2290,8 @@ resource_manager.unregister_font(font_id);
 - 登録を解除したフォントのグリフはキャッシュから捨てる。解除したフォントを使う `TextLayout` を `write_text` に渡したら panic（無効な ID の扱い、§11 登録解除と同じ）
 - 書き込みの補助関数は `&mut ResourceManager` を受け取る（キャッシュに足すため）。`Object*::end` と `end_frame` の間で借用がぶつからない
 - SDF / MSDF・ビットマップのアトラスを GPU に送るときに、テクスチャと同じ `end_frame` の経路（§11 GPU との分担）を使える
+- `register_font` は `impl Into<Vec<u8>>`（`&[u8]`・`Vec<u8>`・`include_bytes!` の値）を受け取り、`ResourceManager` が持つ。TrueType / OpenType のファイル 1 つ分。コレクション（ttc）は先頭のフォントだけを使う。読めない、または 1 em の大きさが 0 なら `Err(InvalidFont)`
+- 行送りの値は、`OS/2` の `USE_TYPO_METRICS` が立っていれば `typo` の値、なければ `hhea` の値（0 なら `typo`、それもなければ `win`）を使う。登録の時点で読んでおく
 - 却下案：テキスト専用の型（`FontSystem` など）をユーザーが持つ。`ResourceManager` は増えないが、GPU に送るものができたときに `end_frame` までの経路を別に作る必要がある
 
 ### CPU 側の設定：TextConfig
@@ -2310,6 +2313,7 @@ let mut resource_manager = ResourceManager::new(ResourceConfig {
 - GPU 側の設定（アトラスの大きさ・レイヤー・余白）は `LonasConfig::glyph_atlas` に残す。`ResourceManager` はアトラスの設定を知らない（§11 GPU との分担）
 - `LonasConfig` と同じく既定値を設けない（§3）。`text` feature を外した場合、`ResourceConfig` に `text` の項目はない
 - 値の検査（`ResourceManager::new`、不正なら panic）：`sdf_em_size` が 0、`sdf_range` が 0 以下か有限でない、`max_new_glyphs_per_frame` が `Some(0)`
+- `TextStyle` の値の検査（`layout_text`、不正なら panic）：`families` が空、`size` が 0 以下か有限でない、`max_width` が `Some` で 0 以下か有限でない、`LineHeight` の値が 0 以下か有限でない、`letter_spacing`・`bold_weight`・`outline_width` が有限でない、登録解除済み・別の `ResourceManager` の `FontId`
 - 却下案：`set_text_config` を足し、`new()` は変えない。呼び忘れが実行時まで分からない
 - 却下案：`ResourceManager::new(&LonasConfig)`。設定は 1 つにまとまるが、`ResourceManager` が GPU 側の設定まで受け取ることになる
 
@@ -2436,7 +2440,7 @@ pub struct Shadow { pub distance: f32, pub angle: f32 } // distance は em に�
 | `Shadow` | 字（と縁取り）と同じ形を、ずらして一番後ろに書く | 書き込み |
 | `Obfuscated` | 書き込むときに、同じ送り幅の場所へ候補の字（gueiz の `OBFUSCATION_POOL`）から種で選んだ字を書く。候補の字は、その場所の字と同じフォントから取る（ない字は候補から外す） | 書き込み |
 | `HideBox` | 字の代わりに、送り幅 × 行の高さの四角形を書く | 書き込み |
-| 下線・打消し線・上線 | 位置と太さはフォントの値（`post` / `OS/2` テーブル）を使う。同じ線が続く字をまとめて 1 本にし、`Stroke` と同じ処理（`object/stroke.rs`）で端を `joint_type` に合わせる | 整形で位置、書き込みで形 |
+| 下線・打消し線・上線 | 位置はフォントの値（`post` / `OS/2` テーブル）、太さは `LineDecoration::line_width` を使う（下記の「整形の結果」）。同じ線が続く字をまとめて 1 本にし、`Stroke` と同じ処理（`object/stroke.rs`）で端を `joint_type` に合わせる | 整形で位置、書き込みで形 |
 | `FontSize` / `SpaceX` / `SpaceY` / `NewLine` | 並べ方に使う | 整形 |
 
 - 合成した太字と `Outline` の形はキャッシュのキーに含める（`(FontId, グリフ, 大きさの段階, 合成の太字, 縁取り)`）。`Italic` はキーに含めない
@@ -2452,6 +2456,12 @@ pub struct Shadow { pub distance: f32, pub angle: f32 } // distance は em に�
 - `max_width: None` なら、改行文字と `TextFormat::NewLine` でだけ改行する
 - 整形の手順：
   1. `Formatted` を、HarfRust に渡す区間（run）に分ける。分けるのは **字の形と送り幅が変わるところ**（`FontSize`、使う書体が変わる位置：フォールバックと、太字・斜体の書体への切り替え）と改行の位置だけ。色などが変わってもカーニングが途切れない
+     - 太字・斜体を切り替えても、選ぶ書体が変わらない（合成する）なら分けない。合成の太字は送り幅を変えないため
+     - 改行は `
+`・`
+
+`・`
+` と、UAX #14 で必ず改行する文字（U+2028 など）・`TextFormat::NewLine`。改行の文字そのものはグリフにしない
   2. 区間ごとに HarfRust で整形し、クラスターごとの送り幅を求める（`SpaceX` はここで足す）
   3. 折り返せる場所を UAX #14 で求め、幅に収まる最後の場所で改行する。改行した場所で整形し直さない（行をまたぐ合字はまれなため）
 - 書く向きは左から右の横書きだけ。右から左（アラビア語など）の混在（双方向）と縦書きは扱わない。文字体系と言語は区間ごとに HarfRust の推定に任せる
@@ -2463,6 +2473,78 @@ pub struct Shadow { pub distance: f32, pub angle: f32 } // distance は em に�
   - `Left`：行の左端を揃える。`Center` / `Right`：レイアウト全体の幅の中で、行ごとに中央 / 右に寄せる
 - 縦の揃え（箱の中で中央に置くなど）は持たない。`layout.size()` から使う側が位置を決める
 - 行の高さは、その行で一番大きい `FontSize` の行送りにする。`SpaceY` はその行の下に足す
+  - `LineHeight::Font(倍率)`：先頭の `FontFamily` の `regular` の行送り（ascender − descender + line gap）× 倍率 × その行で一番大きい `FontSize`
+  - `LineHeight::Fixed(値)`：`FontSize` によらずその値。大きい字が上下の行と重なってもよい（使う側が固定を選んだため）
+  - `SpaceY` は **その行の最後の字の時点** の値を使う（空の行は改行の時点の値）。行の途中で `SpaceY` を変えても、その行の最後の字より前なら効かない
+  - 行の上端から ascender × その行で一番大きい `FontSize` の位置をベースラインにする。行送りが ascender − descender より大きい分（line gap と倍率の分）は行の下に付く
+- 行末の空白（UAX #14 で行末に残る空白）は、幅に収まるかの判定と行の幅・揃えに含めない。グリフとしては残す
+- `layout.size()` は `(幅, 高さ)`。幅は一番長い行の幅（行末の空白を除く）。高さは最後の行の下端（ベースライン − descender × その行で一番大きい `FontSize`）までで、最後の行の行送りの余り・`SpaceY` は含めない
+
+### 整形の結果：TextLayout
+
+**決定：`TextLayout` は、y が下向きで、1 行目の上端の左端（`TextWrite::position`）を原点とする座標で持つ。**`write_text` が `y_axis` に合わせて y の符号を変える（`YAxis::Up` なら反転）。単位は頂点と同じ（`TextStyle::size` と同じ単位）
+
+```rust
+pub struct TextLayout { /* 外から作らない */ }
+impl TextLayout {
+    pub fn size(&self) -> Vector2f;          // (幅, 高さ)（上記の「位置と揃え」）
+    pub fn glyphs(&self) -> &[PlacedGlyph];  // 書く順（行の順、行の中は左から右）
+    pub fn lines(&self) -> &[PlacedLine];    // 下線・打消し線・上線
+    pub fn rows(&self) -> &[TextRow];        // 行ごとの位置と大きさ（空の行も 1 行）
+    pub fn bold_weight(&self) -> f32;        // TextStyle から写した値（書き込みで使う）
+    pub fn outline_width(&self) -> f32;
+}
+
+pub struct TextRow {
+    pub top: f32,       // 行の上端
+    pub baseline: f32,
+    pub bottom: f32,    // ベースライン − descender × その行で一番大きい FontSize
+    pub height: f32,    // 行送り（LineHeight の値。SpaceY を含まない）。HideBox の箱の高さに使う
+    pub x: f32,         // 揃えを反映した行の左端
+    pub width: f32,     // 行の幅（行末の空白を除く）
+}
+
+pub struct PlacedGlyph {
+    pub font: FontId,         // 実際に使った書体（フォールバック・太字・斜体の書体を選んだ後）
+    pub glyph_id: u32,        // フォントの中のグリフの番号。0 は .notdef
+    pub position: Vector2f,   // グリフの原点（ベースライン上）。揃え（TextAlign）を反映した位置
+    pub size: f32,            // 1 em の大きさ（FontSize を反映）
+    pub advance: f32,         // 送り幅（SpaceX を含まない）。HideBox の幅・Obfuscated の候補選びに使う
+    pub cluster: usize,       // 書式を除いた文字列（Formatted::plain_text）の中のバイト位置
+    pub row: usize,
+    pub style: GlyphStyle,    // 書き込みで使う書式（下記）
+}
+
+pub struct GlyphStyle {
+    pub color: Option<Color>,     // None なら TextWrite::color
+    pub ghost: f32,
+    pub synthetic_bold: bool,     // 太字の書体がなく、合成で太らせる
+    pub synthetic_italic: f32,    // 斜体の書体がなく、傾ける量（0 なら傾けない）
+    pub obfuscated: bool,
+    pub hide_box: bool,
+    pub shadow: Option<Shadow>,
+    pub outline: Option<Color>,
+}
+
+pub struct PlacedLine {
+    pub kind: LineKind,           // Underline / Strikethrough / Overline
+    pub start: Vector2f,          // 線の中心の左端
+    pub length: f32,
+    pub thickness: f32,           // LineDecoration::line_width × FontSize
+    pub decoration: LineDecoration,
+    pub color: Option<Color>,
+    pub ghost: f32,
+    pub row: usize,
+}
+```
+
+- `GlyphStyle` の合成の印は、クラスターごとの太字・斜体の状態と、そのクラスターの `FontFamily` から決める（区間を分けなくても、合成の印はクラスターごとに変わる）
+- **決定：下線などの線の太さは `LineDecoration::line_width`、位置はフォントの値を使う。**位置は先頭の `FontFamily` の `regular` の値（上記）
+  - 下線は `post` の underline の位置、打消し線は `OS/2` の strikeout の位置。値がなければ、下線は −0.1 em、打消し線は 0.3 em
+  - 上線は ascender の位置（フォントに値がないため）
+  - 線の太さをフォントの値にしないのは、`LineDecoration::line_width` で指定できる値を無視しないため（§13 書式の表の「位置と太さはフォントの値」から変更）
+- **決定：線は、同じ行で `LineDecoration`・色・`Ghost`・`FontSize` が同じ字が続く間を 1 本にする。**色などが変わる位置で切る（線の色は字の色と同じ）。行の端で切る。範囲は字の送り幅（`SpaceX` を含む）の左端から右端まで
+- `TextLayout` は `FontId` を持つだけで、フォントのデータを借りない（`ResourceManager` を `&mut` で借りたまま持てる）
 
 ### フォントの組とフォールバック
 
@@ -2487,6 +2569,8 @@ pub struct FontFamily {
 
 - 書体の選び方：太字・斜体の状態に合う書体を選ぶ。`bold_italic` がなければ `bold` に傾きを合成し、それもなければ `italic` に太さを合成し、それもなければ `regular` に両方を合成する
 - フォールバックはクラスターごとに判定する。クラスターのすべての文字を持つ（cmap にある）最初の `FontFamily` を使う。`FontFamily` が変わる位置で HarfRust の区間を分ける
+  - クラスターの区切りは、区間をまず先頭の `FontFamily` で整形して求める。クラスターごとに使う `FontFamily` を決め、同じ `FontFamily` が続く範囲ごとに整形し直す（前後の文字は HarfRust の文脈として渡す）
+  - 文字を持つかの判定では、異体字セレクター・ZWJ などの書式の文字（Unicode の Default_Ignorable）を見ない。多くのフォントは cmap に持たないため
 - グリフのキャッシュのキーの `FontId` は、実際に使った書体のもの
 - 行送り・下線などの位置は、先頭の `FontFamily` の `regular` の値を使う。フォールバックの字が上下にはみ出しても行の高さは変えない（行によって行送りが揺れないようにするため）
 - `families` が空なら `layout_text` で panic（誤用）

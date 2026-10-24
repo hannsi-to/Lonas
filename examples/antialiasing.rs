@@ -90,7 +90,7 @@ impl State {
     fn new(window: Arc<Window>) -> Self {
         let size = window.inner_size();
         let (mut gpu, surface) = GpuContext::new(window.clone(), size.width, size.height, common::config()).unwrap();
-        let mut resources = ResourceManager::new();
+        let mut resources = ResourceManager::new(common::resource_config());
         let shader = resources.register_shader(&format!("{}{}", wgsl::STRUCTS, SHADER)).unwrap();
         let camera = Camera3D {
             position: Vector3f::new(0.0, 0.0, 4.0),

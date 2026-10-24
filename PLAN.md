@@ -232,14 +232,14 @@ src/
 
 **目的**：GPU を使わずに、文字列から `TextLayout`（グリフの位置と書式）を作るところまでを完成させる（§13 全体の構成の 1・2）。
 
-- [ ] `text` feature を足し、既定で有効にする（§13 Cargo の feature）
-- [ ] `ResourceConfig` / `TextConfig` と値の検査。`ResourceManager::new(ResourceConfig)` に変え、今の呼び出し（example・テスト）を書き換える（§13 CPU 側の設定）
-- [ ] `register_font` / `unregister_font` と `FontId`（発行元・番号・世代、§11 ID と同じ）
-- [ ] `TextFormat` / `Formatted` / `LineDecoration` / `Shadow` / `ResetTarget` を gueiz から移す。色は `Color` にする（§13 書式）
-- [ ] `FontFamily` と書体の選び方（太字・斜体の書体がなければ合成の印を付ける）、クラスターごとのフォールバック（§13 フォントの組とフォールバック）
-- [ ] `layout_text`：区間への分け方（`FontSize` と使う書体が変わる位置・改行）、HarfRust での整形、`SpaceX`、UAX #14 の折り返しとクラスターの境目での切断、行の高さ・`SpaceY`、`TextAlign`（§13 整形・折り返し、位置と揃え）
-- [ ] 書式の積み上げ（`SkipPush` / `SkipPop` / `Reset`）と、下線などの線の位置（同じ線が続く字をまとめる）を `TextLayout` に記録する
-- [ ] `TextLayout::size`
+- [x] `text` feature を足し、既定で有効にする（§13 Cargo の feature）
+- [x] `ResourceConfig` / `TextConfig` と値の検査。`ResourceManager::new(ResourceConfig)` に変え、今の呼び出し（example・テスト）を書き換える（§13 CPU 側の設定）
+- [x] `register_font` / `unregister_font` と `FontId`（発行元・番号・世代、§11 ID と同じ）
+- [x] `TextFormat` / `Formatted` / `LineDecoration` / `Shadow` / `ResetTarget` を gueiz から移す。色は `Color` にする（§13 書式）
+- [x] `FontFamily` と書体の選び方（太字・斜体の書体がなければ合成の印を付ける）、クラスターごとのフォールバック（§13 フォントの組とフォールバック）
+- [x] `layout_text`：区間への分け方（`FontSize` と使う書体が変わる位置・改行）、HarfRust での整形、`SpaceX`、UAX #14 の折り返しとクラスターの境目での切断、行の高さ・`SpaceY`、`TextAlign`（§13 整形・折り返し、位置と揃え）
+- [x] 書式の積み上げ（`SkipPush` / `SkipPop` / `Reset`）と、下線などの線の位置（同じ線が続く字をまとめる）を `TextLayout` に記録する
+- [x] `TextLayout::size`
 
 **終わりの条件**
 - テスト用のフォント（OFL などの、リポジトリに置けるライセンスのもの）を `tests` 用の素材として置く

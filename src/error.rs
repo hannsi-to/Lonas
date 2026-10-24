@@ -27,6 +27,9 @@ pub enum LonasError {
     InvalidShader { message: String },
     #[cfg(feature = "image")]
     ImageDecode(image::ImageError),
+    // フォントとして読めない（§13 フォントの登録）
+    #[cfg(feature = "text")]
+    InvalidFont,
 }
 
 impl fmt::Display for LonasError {
@@ -48,6 +51,8 @@ impl fmt::Display for LonasError {
             LonasError::InvalidShader { message } => write!(f, "WGSL のシェーダーが正しくありません:\n{message}"),
             #[cfg(feature = "image")]
             LonasError::ImageDecode(error) => write!(f, "画像を読み込めません: {error}"),
+            #[cfg(feature = "text")]
+            LonasError::InvalidFont => write!(f, "フォントを読み込めません"),
         }
     }
 }
