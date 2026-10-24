@@ -384,6 +384,80 @@ fn staging_chunks_are_reused() {
     assert_eq!(active + free + in_flight, total, "GPU が追いついた後にチャンクが増えました");
 }
 
+// get_ の関数は、設定の関数で指定した値と、最後の end の時点の頂点・インデックスを返す（§11 Object の状態の取得）
+#[test]
+fn getters_return_current_state() {
+    let Some(mut gpu) = headless(sample_config()) else { return };
+    let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), VertexLayout::Position);
+    let mut object = Object2D::new(&gpu);
+
+    // 一度も指定していない設定は None
+    assert_eq!(object.get_paint_type(), None);
+    assert_eq!(object.get_blend(), None);
+    assert_eq!(object.get_cull_mode(), None);
+    assert_eq!(object.get_memory_update_type(), None);
+    assert_eq!(object.get_camera(), None);
+    assert_eq!(object.get_shader(), None);
+    assert_eq!(object.get_texture(), None);
+    assert_eq!(object.get_layer(), None);
+    assert_eq!(object.get_bounding_circle(), None);
+    assert_eq!(object.get_uniform::<[f32; 4]>(), None);
+    assert_eq!(object.get_instance_count(), 0);
+
+    let camera = manager.default_camera_id();
+    object
+        .memory_update_type(MemoryUpdateType::Dynamic)
+        .paint_type(PaintType::Fill)
+        .blend(crate::config::Blend::Alpha)
+        .cull_mode(crate::config::CullMode::None)
+        .camera(camera)
+        .layer(3)
+        .bounding_circle(Vector2f::new(1.0, 2.0), 5.0)
+        .uniform(&[0.5f32, 0.25, 1.0, 1.0]);
+
+    assert_eq!(object.get_paint_type(), Some(PaintType::Fill));
+    assert_eq!(object.get_blend(), Some(crate::config::Blend::Alpha));
+    assert_eq!(object.get_cull_mode(), Some(crate::config::CullMode::None));
+    assert_eq!(object.get_memory_update_type(), Some(MemoryUpdateType::Dynamic));
+    assert_eq!(object.get_camera(), Some(camera));
+    assert_eq!(object.get_layer(), Some(3));
+    assert_eq!(object.get_bounding_circle(), Some((Vector2f::new(1.0, 2.0), 5.0)));
+    assert_eq!(object.get_uniform::<[f32; 4]>(), Some([0.5, 0.25, 1.0, 1.0]));
+    // 型の大きさが違えば panic
+    assert!(panic_message(|| { object.get_uniform::<[f32; 2]>(); }).contains("get_uniform"));
+
+    // インスタンス。削除したインスタンスは数に入らず、取得すると panic（update_instance と同じ）
+    let a = object.add_instance(Instance2D { rotation: 1.0, ..Instance2D::default() });
+    let b = object.add_instance(Instance2D::default());
+    object.update_instance(b, Instance2D { rotation: 2.0, ..Instance2D::default() });
+    assert_eq!(object.get_instance(a).rotation, 1.0);
+    assert_eq!(object.get_instance(b).rotation, 2.0);
+    object.remove_instance(a);
+    assert_eq!(object.get_instance_count(), 1);
+    assert!(panic_message(|| { object.get_instance(a); }).contains("削除済み"));
+
+    // 頂点とインデックスは、最後の end の時点の値。index() を呼ばなかった形は Fill で作ったもの
+    gpu.begin_frame();
+    object.begin();
+    triangle(&mut object, 0.0);
+    object.end(&mut manager);
+    assert_eq!(object.get_vertices().len(), 3);
+    assert_eq!(object.get_vertices()[1].x, 1.0);
+    let mut indices = object.get_indices().to_vec();
+    indices.sort_unstable();
+    assert_eq!(indices, [0, 1, 2]);
+}
+
+#[test]
+fn object_3d_bounding_sphere_getter() {
+    let Some(gpu) = headless(sample_config()) else { return };
+    let mut object = Object3D::new(&gpu);
+
+    assert_eq!(object.get_bounding_sphere(), None);
+    object.bounding_sphere(Vector3f::new(1.0, 2.0, 3.0), 4.0);
+    assert_eq!(object.get_bounding_sphere(), Some((Vector3f::new(1.0, 2.0, 3.0), 4.0)));
+}
+
 // 形ごとに、index() を呼んだ形はそのインデックス、呼ばなかった形は paint_type で作る（§10 インデックス）
 #[test]
 fn index_and_automatic_shapes_can_be_mixed() {

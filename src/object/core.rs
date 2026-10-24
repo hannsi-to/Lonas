@@ -701,12 +701,10 @@ impl<I: InstanceData> ObjectCore<I> {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn vertices(&self) -> &[Vertex] {
         &self.vertices
     }
 
-    #[cfg(test)]
     pub(crate) fn index_values(&self) -> &[u32] {
         &self.indices
     }

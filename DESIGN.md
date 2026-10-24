@@ -1870,6 +1870,37 @@ struct Camera {                              // 224 バイト
 
 - 以前の決定（`Object2D` に z のない `vertex(x, y)` / `vertex_color(...)` / `vertex_color_uv(...)` を用意する）は、§1 の `Vertex` で受け取る決定で置き換えた
 
+### Object の状態の取得
+
+**決定：`Object2D` / `Object3D` に、設定やインスタンスなどを読む `get_` の関数を用意する。**
+
+```rust
+impl Object2D { // Object3D も同じ（get_layer / get_bounding_circle は 2D、get_bounding_sphere は 3D のみ）
+    pub fn get_shader(&self) -> Option<ShaderId>;
+    pub fn get_texture(&self) -> Option<TextureId>;
+    pub fn get_camera(&self) -> Option<CameraId>;
+    pub fn get_blend(&self) -> Option<Blend>;
+    pub fn get_paint_type(&self) -> Option<PaintType>;
+    pub fn get_cull_mode(&self) -> Option<CullMode>;
+    pub fn get_memory_update_type(&self) -> Option<MemoryUpdateType>;
+    pub fn get_uniform<T: bytemuck::Pod>(&self) -> Option<T>;
+    pub fn get_instance(&self, id: InstanceId<Instance2D>) -> Instance2D;
+    pub fn get_instance_count(&self) -> usize;
+    pub fn get_vertices(&self) -> &[Vertex];
+    pub fn get_indices(&self) -> &[u32];
+    pub fn get_layer(&self) -> Option<i32>;
+    pub fn get_bounding_circle(&self) -> Option<(Vector2f, f32)>;
+}
+```
+
+- **名前に `get_` を付ける。**Rust の API の慣習では付けないが、設定の関数（`paint_type(value)` など）と名前が重なるため
+- **設定は、設定の関数で指定した値をそのまま返す。**一度も指定していなければ `None`。`end` の時点で `LonasConfig` の `*_when_unset`（`get_camera` は `DrawManager*` の既定のカメラ、`get_bounding_*` は頂点から求めた境界）を使うが、その解決した値は返さない（`DrawManager*` ごとに既定が違いうるため）
+- `get_uniform::<T>()`：`uniform()` で渡した値。`T` の大きさが渡した値と違えば panic（誤用、§9）
+- `get_instance(id)`：別の `Object*` の `InstanceId`・削除済みの `InstanceId` は、`update_instance` と同じく panic。`get_instance_count()` は削除していないインスタンスの数
+- `get_vertices()` / `get_indices()`：最後の `end` の時点の値。`begin`〜`end` の間は書きかけの値になる
+  - `get_vertices()` は `vertex()` で書いた頂点。`Stroke` では線の中心の点で、線として作った頂点ではない
+  - `get_indices()` は GPU に送るインデックス。`index()` で書いた形はそのまま、書かなかった形は `paint_type` で作ったもの（§10 インデックス）。`Stroke` では線として作った頂点を指す
+
 ### 同値の設定の扱いと redundant_call_warning
 
 **決定：`shader()` 以外の設定（`texture` / `blend` / `paint_type` / `camera` / `layer` / `memory_update_type`）も、毎フレーム同じ値で呼ばれた場合は `shader()` と同じく無視して警告する。**

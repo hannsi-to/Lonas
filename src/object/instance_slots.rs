@@ -137,6 +137,10 @@ impl<I: InstanceData> InstanceSlots<I> {
         InstanceId { slot, generation: self.generations[slot as usize], owner: self.owner, _marker: PhantomData }
     }
 
+    pub(crate) fn get(&self, id: InstanceId<I>) -> I {
+        self.slots[self.check(id)]
+    }
+
     pub(crate) fn update(&mut self, id: InstanceId<I>, instance: I) {
         let slot = self.check(id);
 
