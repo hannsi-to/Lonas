@@ -127,6 +127,75 @@ macro_rules! object_common {
             pub fn remove_instance(&mut self, id: InstanceId<$instance>) {
                 self.core.instances.remove(id);
             }
+
+            // ---- 状態の取得（§11 Object の状態の取得）----
+            // 設定は、設定の関数で指定した値を返す。None は一度も指定していない（end の時点で LonasConfig の *_when_unset などを使う）
+            // 設定の関数と名前が重なるため、get_ を付ける
+
+            pub fn get_shader(&self) -> Option<ShaderId> {
+                self.core.shader
+            }
+
+            pub fn get_texture(&self) -> Option<TextureId> {
+                self.core.texture
+            }
+
+            // None なら end で DrawManager* の既定のカメラを使う
+            pub fn get_camera(&self) -> Option<CameraId> {
+                self.core.camera
+            }
+
+            pub fn get_blend(&self) -> Option<Blend> {
+                self.core.blend
+            }
+
+            pub fn get_paint_type(&self) -> Option<PaintType> {
+                self.core.paint_type
+            }
+
+            pub fn get_cull_mode(&self) -> Option<CullMode> {
+                self.core.cull_mode
+            }
+
+            pub fn get_memory_update_type(&self) -> Option<MemoryUpdateType> {
+                self.core.memory_update_type
+            }
+
+            // uniform() で渡した値。None は一度も渡していない。T の大きさが渡した値と違えば panic
+            pub fn get_uniform<T: bytemuck::Pod>(&self) -> Option<T> {
+                if self.core.uniform.is_empty() {
+                    return None;
+                }
+
+                assert_eq!(
+                    self.core.uniform.len(),
+                    size_of::<T>(),
+                    "get_uniform の型の大きさが、uniform() で渡した値の大きさと違います",
+                );
+                Some(bytemuck::pod_read_unaligned(&self.core.uniform))
+            }
+
+            // 別の Object* の InstanceId・削除済みの InstanceId は panic（update_instance と同じ、§7）
+            pub fn get_instance(&self, id: InstanceId<$instance>) -> $instance {
+                self.core.instances.get(id)
+            }
+
+            // 削除していないインスタンスの数
+            pub fn get_instance_count(&self) -> usize {
+                self.core.instances.live_count()
+            }
+
+            // 最後の end の時点の頂点（vertex() で書いたもの）。begin〜end の間は書きかけ
+            // Stroke では線の中心の点で、線として作った頂点ではない
+            pub fn get_vertices(&self) -> &[Vertex] {
+                self.core.vertices()
+            }
+
+            // 最後の end の時点で GPU に送るインデックス。index() で書いた形はそのまま、書かなかった形は paint_type で作ったもの
+            // Stroke では、線として作った頂点を指す
+            pub fn get_indices(&self) -> &[u32] {
+                self.core.index_values()
+            }
         }
     };
 }
@@ -167,6 +236,16 @@ impl Object2D {
         self
     }
 
+    // None なら end で LonasConfig::layer_when_unset を使う
+    pub fn get_layer(&self) -> Option<i32> {
+        self.layer
+    }
+
+    // None なら頂点から自動で計算する
+    pub fn get_bounding_circle(&self) -> Option<(Vector2f, f32)> {
+        self.bounding_circle
+    }
+
     fn layer_setting(&self) -> Option<i32> {
         self.layer
     }
@@ -185,6 +264,11 @@ impl Object3D {
     pub fn bounding_sphere(&mut self, center: Vector3f, radius: f32) -> &mut Self {
         self.bounding_sphere = Some((center, radius));
         self
+    }
+
+    // None なら頂点から自動で計算する
+    pub fn get_bounding_sphere(&self) -> Option<(Vector3f, f32)> {
+        self.bounding_sphere
     }
 
     fn layer_setting(&self) -> Option<i32> {
