@@ -1186,7 +1186,11 @@ pub struct Dash {
   - 模様の位置は線に沿った長さで決まり、`offset` を変えると模様が線に沿って動く
 - **決定：`line_width` と `Dash` の値は `paint_type()` を呼んだ時に検査し、不正なら panic**（§3 設定の値の検査）。`line_width`・`length`・`gap` は 0 より大きい有限の値、`offset` は有限の値（負の値も使える）
 - `begin_shape()` で区切った形は、それぞれ別の線として描く。`begin_hole()` で区切った穴も、外周とは別の線として描く。閉じた輪郭（`strip: false`）なら外周と穴の輪郭をそれぞれ閉じて描き、開いた折れ線なら輪ごとに別の折れ線にする（下記の「穴のある多角形」）
-- **決定：`Stroke` は `index()` と混ぜられない。**`Stroke` は作った頂点を送るが、`index()` は元の頂点を指すため。どれかの形で `index()` を呼んだフレームは `Stroke` を使わず（頂点をそのまま送る）、`index()` を呼ばなかった形は描かない。`Object*` ごとに一度だけ `log` で警告する
+- **決定：`Stroke` の `Object*` でも、`index()` を呼んだ形はそのインデックスで描き、呼ばなかった形は線で描く。**
+  - `index()` は元の頂点を指し、線は作った頂点を使う。そこで `index()` を呼んだ形がある場合は、**元の頂点の後ろに線の頂点を続けて** 送る。`index()` の値は元の頂点の番号のまま使え、線のインデックスは元の頂点の数だけずらす
+  - `index()` を呼んだ形がなければ、以前と同じく線の頂点だけを送る（元の頂点は送らない）
+  - `index()` で指定した形は線にしない（`Fill` が三角形化しないのと同じ）
+  - 以前の決定（`Stroke` と `index()` は混ぜられず、`index()` を呼んだフレームでは `index()` を呼ばなかった形を描かない）は置き換えた。1 つの `Object*` で、塗った形と線の形を一緒に描けるようにするため
 - 却下案：頂点シェーダーで線を広げる方法。描画の頂点の並びとシェーダーとの約束事（§11）が線のためだけに変わり、ユーザーのシェーダーに線の処理を書かせることになるため
 
 ### インスタンスが 0 個の Object
@@ -1901,7 +1905,7 @@ impl Object2D { // Object3D も同じ（get_layer / get_bounding_circle は 2D�
 - `get_instance(id)`：別の `Object*` の `InstanceId`・削除済みの `InstanceId` は、`update_instance` と同じく panic。`get_instance_count()` は削除していないインスタンスの数
 - `get_vertices()` / `get_indices()`：最後の `end` の時点の値。`begin`〜`end` の間は書きかけの値になる
   - `get_vertices()` は `vertex()` で書いた頂点。`Stroke` では線の中心の点で、線として作った頂点ではない
-  - `get_indices()` は GPU に送るインデックス。`index()` で書いた形はそのまま、書かなかった形は `paint_type` で作ったもの（§10 インデックス）。`Stroke` では線として作った頂点を指す
+  - `get_indices()` は GPU に送るインデックス。`index()` で書いた形はそのまま、書かなかった形は `paint_type` で作ったもの（§10 インデックス）。`Stroke` の形は線として作った頂点を指す（`index()` の形がある場合、線の頂点は元の頂点の後ろに並ぶ）
 - `get_written_vertex_count()` / `get_written_index_count()`：このフレームの `begin` から `vertex()` で書いた頂点・`index()` で積んだ数。`begin`〜`end` の途中でも使える。`begin` で 0 に戻り、`end` の後も次の `begin` までは同じ値
   - `index()` の番号は `Object*` 全体の通し番号（§10 インデックス）のため、`begin_shape()` の後の形の番号の起点に `get_written_vertex_count()` を使える
   - 名前に `written` を入れ、最後の `end` の時点の値を返す `get_vertices()` / `get_indices()` と区別する

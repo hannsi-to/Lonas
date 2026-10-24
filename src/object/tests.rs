@@ -559,27 +559,53 @@ fn index_and_automatic_shapes_can_be_mixed() {
     end_frame(&mut gpu, &mut resources, &mut manager);
 }
 
-// Stroke は index() と混ぜられない。index() を呼んだフレームは、呼ばなかった形を描かない（§10 インデックス）
+// Stroke の Object でも、index() を呼んだ形はそのインデックス、呼ばなかった形は線で描く（§10 インデックス）
+// index() は元の頂点を指すため、元の頂点の後ろに線の頂点を続けて送る
 #[test]
-fn stroke_shapes_are_not_drawn_with_index() {
+fn stroke_and_index_shapes_can_be_mixed() {
     let Some(mut gpu) = headless(sample_config()) else { return };
+    let mut resources = ResourceManager::new();
     let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), VertexLayout::Position);
     let mut object = Object2D::new(&gpu);
     let stroke = PaintType::Stroke { line_width: 2.0, joint_type: crate::object::JointType::Miter, strip: false, dash: None };
     object.memory_update_type(MemoryUpdateType::Dynamic).paint_type(stroke);
     object.add_instance(Instance2D::default());
 
-    gpu.begin_frame();
-    object.begin();
-    triangle(&mut object, 0.0);
-    object.index(0).index(1).index(2);
-    object.begin_shape();
-    triangle(&mut object, 5.0);
-    object.end(&mut manager);
+    let draw = |gpu: &mut GpuContext, object: &mut Object2D, manager: &mut DrawManager2D, with_index: bool| {
+        gpu.begin_frame();
+        object.begin();
+        triangle(object, 0.0);
+        if with_index {
+            object.index(0).index(1).index(2);
+        }
+        object.begin_shape();
+        triangle(object, 5.0);
+        object.end(manager);
+    };
 
-    // 元の頂点を送り、index() の三角形だけを描く
-    assert_eq!(object.core.uploaded_vertices(), object.core.vertices());
-    assert_eq!(object.core.index_values(), [0, 1, 2]);
+    // 1 つ目は index() の三角形、2 つ目は線（閉じた輪郭：3 辺と 3 つの角）
+    draw(&mut gpu, &mut object, &mut manager, true);
+    let uploaded = object.core.uploaded_vertices().to_vec();
+    assert_eq!(uploaded[..6], *object.core.vertices());
+    assert!(uploaded.len() > 6);
+    assert_eq!(object.core.index_values()[..3], [0, 1, 2]);
+    // 線のインデックスは、元の頂点の後ろの線の頂点だけを指す
+    assert!(object.core.index_values()[3..].iter().all(|&i| i >= 6 && (i as usize) < uploaded.len()));
+    assert_eq!(object.core.index_values().len(), 3 + (3 * 2 + 3 * 2) * 3);
+    end_frame(&mut gpu, &mut resources, &mut manager);
+
+    // 同じなら何も送らない
+    draw(&mut gpu, &mut object, &mut manager, true);
+    assert!(manager.core.heap_requests.is_empty());
+    end_frame(&mut gpu, &mut resources, &mut manager);
+
+    // index() をやめると、2 つとも線になり、元の頂点は送らない
+    // （最初は「元の 6 頂点 + 三角形 1 つ分の線の頂点」、今は「三角形 2 つ分の線の頂点」）
+    let line_vertices = uploaded.len() - 6;
+    draw(&mut gpu, &mut object, &mut manager, false);
+    assert_eq!(object.core.uploaded_vertices().len(), 2 * line_vertices);
+    assert!(object.core.index_values().iter().all(|&i| (i as usize) < object.core.uploaded_vertices().len()));
+    assert_eq!(object.core.index_values().len(), 2 * (3 * 2 + 3 * 2) * 3);
 }
 
 // 形の区切りが変われば、頂点が同じでもインデックスを作り直す（§10 形の区切り）

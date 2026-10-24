@@ -203,7 +203,7 @@ macro_rules! object_common {
             }
 
             // 最後の end の時点で GPU に送るインデックス。index() で書いた形はそのまま、書かなかった形は paint_type で作ったもの
-            // Stroke では、線として作った頂点を指す
+            // Stroke の形は線として作った頂点を指す（index() の形がある場合、線の頂点は元の頂点の後ろに並ぶ）
             pub fn get_indices(&self) -> &[u32] {
                 self.core.index_values()
             }

@@ -3,6 +3,7 @@
 // 三角形は xy 平面で反時計回りに揃える。角の内側では辺の四角形どうしが重なる
 
 use std::f32::consts::PI;
+use std::ops::Range;
 
 use super::paint_type::{self, Break, Dash, JointType};
 use crate::math::Vector2f;
@@ -19,16 +20,33 @@ const MIN_LENGTH: f32 = 1e-6;
 pub(crate) struct Mesh {
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
+    // 形ごとの indices の範囲（飛ばした形・描かない形は空）
+    pub shapes: Vec<Range<usize>>,
 }
 
 // breaks は begin_shape() / begin_hole() の区切り（§10 形の区切り・穴のある多角形）。各形の外周と穴の輪郭を、それぞれ別の線として描く
-pub(crate) fn tessellate(points: &[Vertex], breaks: &[Break], line_width: f32, joint: JointType, strip: bool, dash: Option<Dash>) -> Mesh {
+// skip[i] が true の形（index() で指定した形）は作らない。skip が短ければ、足りない分は作る
+pub(crate) fn tessellate(
+    points: &[Vertex],
+    breaks: &[Break],
+    skip: &[bool],
+    line_width: f32,
+    joint: JointType,
+    strip: bool,
+    dash: Option<Dash>,
+) -> Mesh {
     let mut builder = Builder { mesh: Mesh::default(), half: line_width * 0.5, joint };
 
-    for shape in paint_type::shapes(points.len(), breaks) {
-        for ring in shape.rings() {
-            builder.ring(&points[ring], strip, dash);
+    for (index, shape) in paint_type::shapes(points.len(), breaks).into_iter().enumerate() {
+        let start = builder.mesh.indices.len();
+
+        if !skip.get(index).copied().unwrap_or(false) {
+            for ring in shape.rings() {
+                builder.ring(&points[ring], strip, dash);
+            }
         }
+
+        builder.mesh.shapes.push(start..builder.mesh.indices.len());
     }
 
     builder.mesh
@@ -324,7 +342,7 @@ mod tests {
     }
 
     fn solid(xy: &[(f32, f32)], width: f32, joint: JointType, strip: bool) -> Mesh {
-        tessellate(&points(xy), &[], width, joint, strip, None)
+        tessellate(&points(xy), &[], &[], width, joint, strip, None)
     }
 
     fn triangles(mesh: &Mesh) -> Vec<[Vector2f; 3]> {
@@ -368,7 +386,7 @@ mod tests {
         for joint in ALL_JOINTS {
             for strip in [true, false] {
                 for dash in [None, Some(Dash { length: 3.0, gap: 1.5, offset: 0.7 })] {
-                    let mesh = tessellate(&points(&zigzag), &[], 2.0, joint, strip, dash);
+                    let mesh = tessellate(&points(&zigzag), &[], &[], 2.0, joint, strip, dash);
 
                     assert!(!mesh.indices.is_empty());
                     assert!(mesh.indices.iter().all(|&i| (i as usize) < mesh.vertices.len()));
@@ -518,8 +536,8 @@ mod tests {
     fn holes_are_outlined_as_separate_rings() {
         // 外周 0〜10 の正方形と、穴 4〜6 の正方形
         let rings = points(&[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0), (4.0, 4.0), (6.0, 4.0), (6.0, 6.0), (4.0, 6.0)]);
-        let closed = tessellate(&rings, &[Break::Hole(4)], 1.0, JointType::Miter, false, None);
-        let open = tessellate(&rings, &[Break::Hole(4)], 1.0, JointType::Miter, true, None);
+        let closed = tessellate(&rings, &[Break::Hole(4)], &[], 1.0, JointType::Miter, false, None);
+        let open = tessellate(&rings, &[Break::Hole(4)], &[], 1.0, JointType::Miter, true, None);
 
         // 閉じた輪郭は、どちらの輪も 4 辺と 4 つの角（三角形 16 個ずつ）。外周と穴の間をつなぐ線はない
         assert_eq!(closed.indices.len() / 3, 16 * 2);
@@ -530,17 +548,28 @@ mod tests {
         // 開いた折れ線は、輪ごとに 3 辺と内側の 2 つの角
         assert_eq!(open.indices.len() / 3, (3 * 2 + 2 * 2) * 2);
         // 空の穴は何も描かない
-        assert_eq!(tessellate(&rings, &[Break::Hole(4), Break::Hole(8)], 1.0, JointType::Miter, false, None).indices, closed.indices);
+        assert_eq!(tessellate(&rings, &[Break::Hole(4), Break::Hole(8)], &[], 1.0, JointType::Miter, false, None).indices, closed.indices);
     }
 
     #[test]
     fn shapes_are_drawn_as_separate_lines() {
         // 2 本の線分を begin_shape() で区切る。間をつなぐ線はない
         let lines = points(&[(0.0, 0.0), (10.0, 0.0), (0.0, 5.0), (10.0, 5.0)]);
-        let mesh = tessellate(&lines, &[Break::Shape(2)], 1.0, JointType::Miter, true, None);
+        let mesh = tessellate(&lines, &[Break::Shape(2)], &[], 1.0, JointType::Miter, true, None);
 
         assert_eq!(mesh.indices.len() / 3, 2 * 2);
         assert!(mesh.vertices.iter().all(|v| (v.y - 0.0).abs() <= 0.5 + 1e-4 || (v.y - 5.0).abs() <= 0.5 + 1e-4));
+    }
+
+    #[test]
+    fn shapes_given_by_index_are_skipped() {
+        // 2 本の線分。1 本目は index() で指定したものとして作らない
+        let lines = points(&[(0.0, 0.0), (10.0, 0.0), (0.0, 5.0), (10.0, 5.0)]);
+        let mesh = tessellate(&lines, &[Break::Shape(2)], &[true], 1.0, JointType::Miter, true, None);
+
+        assert_eq!(mesh.shapes[0], 0..0);
+        assert_eq!(mesh.shapes[1], 0..6);
+        assert!(mesh.vertices.iter().all(|v| (v.y - 5.0).abs() <= 0.5 + 1e-4));
     }
 
     #[test]

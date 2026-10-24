@@ -421,16 +421,7 @@ impl<I: InstanceData> ObjectCore<I> {
         let paint_type = self.paint_type.expect("index() も paint_type() も呼ばずに Object の end が呼ばれました");
 
         if let PaintType::Stroke { .. } = paint_type {
-            if !self.explicit_indices {
-                return self.finish_stroke(paint_type, breaks_changed);
-            }
-
-            // Stroke は作った頂点を送るため、元の頂点を指す index() とは混ぜられない。index() を呼んだフレームは Stroke を使わない
-            if self.warned.insert("stroke_with_index") {
-                log::warn!("Stroke と index() は同じ Object で混ぜられません。index() を呼んだフレームでは、index() を呼ばなかった形を描きません");
-            }
-
-            return self.finish_explicit(&written, None) || positions_changed;
+            return self.finish_stroke(paint_type, breaks_changed, &written, explicit);
         }
 
         let key = (paint_type, self.vertices.len());
@@ -464,6 +455,16 @@ impl<I: InstanceData> ObjectCore<I> {
     // 形ごとに、index() で書いたインデックスか、作ったインデックス（generated）を並べ、前と違う位置だけを送る
     // 元の頂点をそのまま送るため、Stroke をやめた場合は true
     fn finish_explicit(&mut self, written: &[Range<usize>], generated: Option<(&[u32], &[Range<usize>])>) -> bool {
+        if generated.is_none() {
+            // paint_type から作る形がないため、次に作る時は必ず作り直す
+            self.generated_for = None;
+        }
+
+        self.assemble_indices(written, generated);
+        self.leave_stroke()
+    }
+
+    fn assemble_indices(&mut self, written: &[Range<usize>], generated: Option<(&[u32], &[Range<usize>])>) {
         let mut indices = Vec::with_capacity(self.indices.len());
 
         for (shape, range) in written.iter().enumerate() {
@@ -476,43 +477,52 @@ impl<I: InstanceData> ObjectCore<I> {
             }
         }
 
-        if generated.is_none() {
-            // paint_type から作る形がないため、次に作る時は必ず作り直す
-            self.generated_for = None;
-        }
-
         replace_tracking(&mut self.indices, indices, &mut self.index_dirty);
-        self.leave_stroke()
     }
 
     // 線の中心の点から、GPU に送る頂点とインデックスを作る（§10 線：Stroke）
-    // 点（位置以外の要素を含む）・設定・点の数・形と穴の区切りのどれかが変わった時だけ作り直し、前と違う位置だけを送る
-    fn finish_stroke(&mut self, paint_type: PaintType, breaks_changed: bool) -> bool {
+    // 点（位置以外の要素を含む）・設定・点の数・形と穴の区切り・index() で指定する形のどれかが変わった時だけ作り直し、前と違う位置だけを送る
+    // index() を呼んだ形はそのインデックスで描く。index() は元の頂点を指すため、その形がある場合は、元の頂点の後ろに線の頂点を続けて送る
+    fn finish_stroke(&mut self, paint_type: PaintType, breaks_changed: bool, written: &[Range<usize>], explicit: Vec<bool>) -> bool {
         let PaintType::Stroke { line_width, joint_type, strip, dash } = paint_type else { unreachable!() };
         let entering = !self.uses_stroke;
         let key = (paint_type, self.vertices.len());
+        let regenerate = entering
+            || breaks_changed
+            || self.vertex_dirty.is_some()
+            || self.generated_for != Some(key)
+            || self.explicit_shapes != explicit;
 
-        if !entering && !breaks_changed && self.vertex_dirty.is_none() && self.generated_for == Some(key) {
-            return false;
+        if regenerate {
+            let mesh = stroke::tessellate(&self.vertices, &self.breaks, &explicit, line_width, joint_type, strip, dash);
+            let (mut vertices, offset) =
+                if explicit.contains(&true) { (self.vertices.clone(), self.vertices.len() as u32) } else { (Vec::new(), 0) };
+
+            vertices.extend(mesh.vertices);
+
+            // vertex_dirty は線の中心の点の範囲のため、送る頂点の差分で置き換える
+            self.vertex_dirty = None;
+
+            if entering {
+                self.vertex_dirty = full_range(vertices.len());
+                self.stroke_vertices = vertices;
+            } else {
+                replace_tracking(&mut self.stroke_vertices, vertices, &mut self.vertex_dirty);
+            }
+
+            self.generated = mesh.indices.into_iter().map(|i| i + offset).collect();
+            self.generated_shapes = mesh.shapes;
+            self.explicit_shapes = explicit;
+            self.uses_stroke = true;
+            self.had_leftover = false;
+            self.generated_for = Some(key);
         }
 
-        let mesh = stroke::tessellate(&self.vertices, &self.breaks, line_width, joint_type, strip, dash);
+        let generated = (std::mem::take(&mut self.generated), std::mem::take(&mut self.generated_shapes));
+        self.assemble_indices(written, Some((&generated.0, &generated.1)));
+        (self.generated, self.generated_shapes) = generated;
 
-        // vertex_dirty は線の中心の点の範囲のため、作った頂点の差分で置き換える
-        self.vertex_dirty = None;
-
-        if entering {
-            self.vertex_dirty = full_range(mesh.vertices.len());
-            self.stroke_vertices = mesh.vertices;
-        } else {
-            replace_tracking(&mut self.stroke_vertices, mesh.vertices, &mut self.vertex_dirty);
-        }
-
-        replace_tracking(&mut self.indices, mesh.indices, &mut self.index_dirty);
-        self.uses_stroke = true;
-        self.had_leftover = false;
-        self.generated_for = Some(key);
-        true
+        regenerate
     }
 
     // Stroke をやめたら、GPU の頂点を元の頂点ですべて送り直す。やめた場合は true
