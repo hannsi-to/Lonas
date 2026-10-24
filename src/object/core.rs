@@ -5,7 +5,7 @@ use std::ops::Range;
 
 use super::instance_slots::{InstanceData, InstanceSlots, ObjectId};
 use super::stroke;
-use super::topology::{self, Topology, Winding};
+use super::topology::{self, Break, Topology, Winding};
 use crate::config::{Blend, CullMode};
 use crate::draw::{CameraId, DrawCommand, DrawManagerCore, DrawSettings, DroppedRegions, HeapRequest, SpaceKind};
 use crate::gpu::GpuContext;
@@ -104,9 +104,10 @@ pub(crate) struct ObjectCore<I> {
     // Stroke のときに GPU へ送る頂点。このとき vertices は線の中心の点になる（§10 線：Stroke）
     stroke_vertices: Vec<Vertex>,
     uses_stroke: bool,
-    // 穴の最初の頂点の位置（§10 穴のある多角形）。hole_cursor はこのフレームの begin_hole() で記録し、holes は最後に三角形化に使った値
-    holes: Vec<usize>,
-    hole_cursor: Vec<usize>,
+    // begin_shape() / begin_hole() の区切り（§10 形の区切り・穴のある多角形）
+    // break_cursor はこのフレームに記録した値、breaks は最後に三角形化に使った値
+    breaks: Vec<Break>,
+    break_cursor: Vec<Break>,
 
     pub instances: InstanceSlots<I>,
     texture_changed: bool,
@@ -173,8 +174,8 @@ impl<I: InstanceData> ObjectCore<I> {
             generated_for: None,
             stroke_vertices: Vec::new(),
             uses_stroke: false,
-            holes: Vec::new(),
-            hole_cursor: Vec::new(),
+            breaks: Vec::new(),
+            break_cursor: Vec::new(),
             instances: InstanceSlots::new(id),
             texture_changed: false,
             uniform: Vec::new(),
@@ -203,12 +204,17 @@ impl<I: InstanceData> ObjectCore<I> {
         self.vertex_cursor = 0;
         self.index_cursor = 0;
         self.explicit_indices = false;
-        self.hole_cursor.clear();
+        self.break_cursor.clear();
     }
 
-    // 以降の頂点を、次の begin_hole() まで 1 つの穴の輪郭にする（§10 穴のある多角形）
+    // 以降の頂点を、新しい形にする（§10 形の区切り）
+    pub(crate) fn begin_shape(&mut self) {
+        self.break_cursor.push(Break::Shape(self.vertex_cursor));
+    }
+
+    // 以降の頂点を、今の形の穴の輪郭にする（§10 穴のある多角形）
     pub(crate) fn begin_hole(&mut self) {
-        self.hole_cursor.push(self.vertex_cursor);
+        self.break_cursor.push(Break::Hole(self.vertex_cursor));
     }
 
     // 前フレームの値と比較しながら書き込み、変わった位置を記録する（§1・§4）
@@ -390,10 +396,10 @@ impl<I: InstanceData> ObjectCore<I> {
     // 戻り値は GPU に送る頂点の位置が変わったか（境界を求め直すかに使う）
     fn finish_indices(&mut self) -> bool {
         let positions_changed = std::mem::take(&mut self.positions_changed);
-        let holes_changed = self.hole_cursor != self.holes;
+        let breaks_changed = self.break_cursor != self.breaks;
 
-        if holes_changed {
-            self.holes.clone_from(&self.hole_cursor);
+        if breaks_changed {
+            self.breaks.clone_from(&self.break_cursor);
         }
 
         if self.explicit_indices {
@@ -406,22 +412,24 @@ impl<I: InstanceData> ObjectCore<I> {
         let topology = self.topology.expect("index() も topology() も呼ばずに Object の end が呼ばれました");
 
         if let Topology::Stroke { .. } = topology {
-            return self.finish_stroke(topology, holes_changed);
+            return self.finish_stroke(topology, breaks_changed);
         }
 
         let left_stroke = self.leave_stroke();
         let key = (topology, self.vertices.len());
         let needs_generation =
-            self.generated_for != Some(key) || holes_changed || (topology == Topology::Polygon && positions_changed);
+            self.generated_for != Some(key) || breaks_changed || (topology == Topology::Polygon && positions_changed);
 
-        // 穴は Polygon と Stroke でだけ使う。他の分け方では外周の頂点だけを使い、一度だけ警告する
-        if !self.holes.is_empty() && topology != Topology::Polygon && self.warned.insert("holes") {
-            log::warn!("begin_hole() の穴は Polygon と Stroke でだけ使います。{topology:?} では外周の頂点だけを描きます");
+        // 穴は Polygon と Stroke でだけ使う。他の分け方では各形の外周の頂点だけを使い、一度だけ警告する
+        let has_holes = self.breaks.iter().any(|b| matches!(b, Break::Hole(_)));
+
+        if has_holes && topology != Topology::Polygon && self.warned.insert("holes") {
+            log::warn!("begin_hole() の穴は Polygon と Stroke でだけ使います。{topology:?} では各形の外周の頂点だけを描きます");
         }
 
         if needs_generation {
             let positions: Vec<Vector3f> = self.vertices.iter().map(|v| Vector3f::new(v.x, v.y, v.z)).collect();
-            let generated = topology::generate(topology, &positions, &self.holes, self.winding);
+            let generated = topology::generate(topology, &positions, &self.breaks, self.winding);
 
             // 頂点数が合わない状態になった時に 1 回だけ警告する（§10）
             if generated.has_leftover && !self.had_leftover {
@@ -440,17 +448,17 @@ impl<I: InstanceData> ObjectCore<I> {
     }
 
     // 線の中心の点から、GPU に送る頂点とインデックスを作る（§10 線：Stroke）
-    // 点（位置以外の要素を含む）・設定・点の数・穴の区切りのどれかが変わった時だけ作り直し、前と違う位置だけを送る
-    fn finish_stroke(&mut self, topology: Topology, holes_changed: bool) -> bool {
+    // 点（位置以外の要素を含む）・設定・点の数・形と穴の区切りのどれかが変わった時だけ作り直し、前と違う位置だけを送る
+    fn finish_stroke(&mut self, topology: Topology, breaks_changed: bool) -> bool {
         let Topology::Stroke { line_width, joint_type, strip, dash } = topology else { unreachable!() };
         let entering = !self.uses_stroke;
         let key = (topology, self.vertices.len());
 
-        if !entering && !holes_changed && self.vertex_dirty.is_none() && self.generated_for == Some(key) {
+        if !entering && !breaks_changed && self.vertex_dirty.is_none() && self.generated_for == Some(key) {
             return false;
         }
 
-        let mesh = stroke::tessellate(&self.vertices, &self.holes, line_width, joint_type, strip, dash);
+        let mesh = stroke::tessellate(&self.vertices, &self.breaks, line_width, joint_type, strip, dash);
 
         // vertex_dirty は線の中心の点の範囲のため、作った頂点の差分で置き換える
         self.vertex_dirty = None;
