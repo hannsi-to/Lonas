@@ -448,6 +448,49 @@ fn getters_return_current_state() {
     assert_eq!(indices, [0, 1, 2]);
 }
 
+// begin〜end の途中で、そのフレームに書いた頂点・index() の数を取得できる（§11 Object の状態の取得）
+#[test]
+fn written_counts_during_frame() {
+    let Some(mut gpu) = headless(sample_config()) else { return };
+    let mut resources = ResourceManager::new();
+    let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), VertexLayout::Position);
+    let mut object = Object2D::new(&gpu);
+    object.memory_update_type(MemoryUpdateType::Dynamic).paint_type(PaintType::Fill);
+    object.add_instance(Instance2D::default());
+    let square = |object: &mut Object2D, left: f32| {
+        for (x, y) in [(left, 0.0), (left + 1.0, 0.0), (left + 1.0, 1.0), (left, 1.0)] {
+            object.vertex(Vertex::new_position(x, y, 0.0));
+        }
+    };
+
+    assert_eq!((object.get_written_vertex_count(), object.get_written_index_count()), (0, 0));
+
+    gpu.begin_frame();
+    object.begin();
+    square(&mut object, 0.0);
+    object.index(0).index(1).index(2).index(2).index(3).index(0);
+    assert_eq!((object.get_written_vertex_count(), object.get_written_index_count()), (4, 6));
+
+    // 2 つ目の形の番号は、それまでに書いた頂点の数から始まる
+    object.begin_shape();
+    let base = object.get_written_vertex_count() as u32;
+    square(&mut object, 5.0);
+    for i in [0, 1, 2, 2, 3, 0] {
+        object.index(base + i);
+    }
+    assert_eq!((object.get_written_vertex_count(), object.get_written_index_count()), (8, 12));
+    object.end(&mut manager);
+    assert_eq!(object.get_indices(), [0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4]);
+    // end の後も次の begin までは同じ値
+    assert_eq!((object.get_written_vertex_count(), object.get_written_index_count()), (8, 12));
+    end_frame(&mut gpu, &mut resources, &mut manager);
+
+    // begin で 0 に戻る
+    gpu.begin_frame();
+    object.begin();
+    assert_eq!((object.get_written_vertex_count(), object.get_written_index_count()), (0, 0));
+}
+
 #[test]
 fn object_3d_bounding_sphere_getter() {
     let Some(gpu) = headless(sample_config()) else { return };

@@ -1888,6 +1888,8 @@ impl Object2D { // Object3D も同じ（get_layer / get_bounding_circle は 2D�
     pub fn get_instance_count(&self) -> usize;
     pub fn get_vertices(&self) -> &[Vertex];
     pub fn get_indices(&self) -> &[u32];
+    pub fn get_written_vertex_count(&self) -> usize;
+    pub fn get_written_index_count(&self) -> usize;
     pub fn get_layer(&self) -> Option<i32>;
     pub fn get_bounding_circle(&self) -> Option<(Vector2f, f32)>;
 }
@@ -1900,6 +1902,9 @@ impl Object2D { // Object3D も同じ（get_layer / get_bounding_circle は 2D�
 - `get_vertices()` / `get_indices()`：最後の `end` の時点の値。`begin`〜`end` の間は書きかけの値になる
   - `get_vertices()` は `vertex()` で書いた頂点。`Stroke` では線の中心の点で、線として作った頂点ではない
   - `get_indices()` は GPU に送るインデックス。`index()` で書いた形はそのまま、書かなかった形は `paint_type` で作ったもの（§10 インデックス）。`Stroke` では線として作った頂点を指す
+- `get_written_vertex_count()` / `get_written_index_count()`：このフレームの `begin` から `vertex()` で書いた頂点・`index()` で積んだ数。`begin`〜`end` の途中でも使える。`begin` で 0 に戻り、`end` の後も次の `begin` までは同じ値
+  - `index()` の番号は `Object*` 全体の通し番号（§10 インデックス）のため、`begin_shape()` の後の形の番号の起点に `get_written_vertex_count()` を使える
+  - 名前に `written` を入れ、最後の `end` の時点の値を返す `get_vertices()` / `get_indices()` と区別する
 
 ### 同値の設定の扱いと redundant_call_warning
 

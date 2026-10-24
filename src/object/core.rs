@@ -701,6 +701,15 @@ impl<I: InstanceData> ObjectCore<I> {
         }
     }
 
+    // このフレームの begin から書いた頂点・index() の数（§11 Object の状態の取得）
+    pub(crate) fn written_vertex_count(&self) -> usize {
+        self.vertex_cursor
+    }
+
+    pub(crate) fn written_index_count(&self) -> usize {
+        self.written_indices.len()
+    }
+
     pub(crate) fn vertices(&self) -> &[Vertex] {
         &self.vertices
     }
