@@ -1,10 +1,12 @@
 // テキスト（§13）。text feature
-// 段階 9 では、フォントの登録と整形（文字列から TextLayout を作る）までを持つ。GPU は使わない
-#![allow(dead_code)] // TextConfig の値とフォントの輪郭は段階 10 以降で使う
+// フォントの登録・整形（TextLayout）・ベクターの書き込み（write_text）
+#![allow(dead_code)] // TextConfig の SDF の値は段階 12 で使う
 
 mod font;
 pub mod format;
 mod layout;
+pub(crate) mod vector;
+mod write;
 
 pub use font::FontFamily;
 pub(crate) use font::FontData;
@@ -13,6 +15,7 @@ pub use format::{
     TextFormatErrorKind, Token,
 };
 pub use layout::{GlyphStyle, LineHeight, LineKind, PlacedGlyph, PlacedLine, TextAlign, TextLayout, TextRow, TextStyle};
+pub use write::{GlyphMethod, TextObject, TextWrite, YAxis, write_text};
 
 // グリフを作る側の設定（§13 CPU 側の設定）。ResourceConfig::text で受け取る
 #[derive(Clone, Debug, PartialEq)]
@@ -46,3 +49,6 @@ impl TextConfig {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod write_tests;

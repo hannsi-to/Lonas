@@ -276,6 +276,14 @@ impl<I: InstanceData> ObjectCore<I> {
         }
     }
 
+    // この Object で一度だけ警告する（write_text が使う）
+    #[cfg(feature = "text")]
+    pub(crate) fn warn_once(&mut self, key: &'static str, message: &str) {
+        if self.warned.insert(key) {
+            log::warn!("{message}（この Object では以降警告しません）");
+        }
+    }
+
     pub(crate) fn set_texture(&mut self, texture: TextureId) {
         if self.set("texture", |core| &mut core.texture, texture) {
             // texture_slot を全インスタンスで書き直す（§2 end 時の更新条件）
@@ -410,7 +418,17 @@ impl<I: InstanceData> ObjectCore<I> {
             .enumerate()
             .map(|(i, &start)| start..starts.get(i + 1).copied().unwrap_or(self.written_indices.len()))
             .collect();
-        let explicit: Vec<bool> = written.iter().map(|range| !range.is_empty()).collect();
+        // 頂点のない形は作る三角形がないため、index() がなくても paint_type を要しない（§10 インデックス）
+        let shape_starts: Vec<usize> = std::iter::once(0)
+            .chain(self.breaks.iter().filter_map(|split| match split {
+                Break::Shape(position) => Some(*position),
+                Break::Hole(_) => None,
+            }))
+            .collect();
+        let vertex_count = self.vertices.len();
+        let empty_shape =
+            |shape: usize| shape_starts.get(shape).copied().unwrap_or(vertex_count) == shape_starts.get(shape + 1).copied().unwrap_or(vertex_count);
+        let explicit: Vec<bool> = written.iter().enumerate().map(|(shape, range)| !range.is_empty() || empty_shape(shape)).collect();
         let any_automatic = explicit.iter().any(|&e| !e);
 
         if !any_automatic {

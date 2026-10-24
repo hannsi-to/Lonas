@@ -255,15 +255,15 @@ src/
 
 **目的**：`write_text` で `GlyphMethod::Vector` の文字を画面に出す（§13 ベクター・整形と書き込みの分け方・書式）。
 
-- [ ] skrifa の輪郭を lyon の `FillTessellator`（`FillRule::NonZero`）で三角形化し、三角形を反時計回りに揃える
-- [ ] 大きさの段階（`size × pixel_scale` を 2 倍ごとに切り上げ）と許容誤差 0.25px、em 単位のキャッシュ
-- [ ] 合成の太字・縁取り（ずらした複製を 1 つのパスにまとめる）と、キャッシュのキー
-- [ ] キャッシュのバイト数の上限と、`end_frame` での古い形の破棄（§13 ベクター：輪郭の三角形化）
-- [ ] `write_text`：`Object2D` / `Object3D` のための crate 内のトレイト、グリフごとの `begin_shape()` と `index()`、`YAxis::Down` での反転とインデックスの順の入れ替え
-- [ ] 書き込みの書式：色・`Ghost`・`Italic`（傾け）・`Shadow`・`Obfuscated`（種で選ぶ）・`HideBox`・下線などの線（`object/stroke.rs` を使う）。影 → 縁取り → 字 の順
-- [ ] `max_new_glyphs_per_frame` と `prepare_glyphs`、`ResourceManager` がフレームの区切りを `end_frame` で知る仕組み（§13 グリフを作る負担を分ける）
-- [ ] 3D の `Opaque` に影・縁取りを書いた時の警告（§13 3D の影・縁取り）
-- [ ] `lonas::wgsl::text_shader` の `Vector` 用（頂点の色をそのまま出す）
+- [x] skrifa の輪郭を lyon の `FillTessellator`（`FillRule::NonZero`）で三角形化し、三角形を反時計回りに揃える
+- [x] 大きさの段階（`size × pixel_scale` を 2 倍ごとに切り上げ）と許容誤差 0.25px、em 単位のキャッシュ
+- [x] 合成の太字・縁取り（ずらした複製を 1 つのパスにまとめる）と、キャッシュのキー
+- [x] キャッシュのバイト数の上限と、`end_frame` での古い形の破棄（§13 ベクター：輪郭の三角形化）
+- [x] `write_text`：`Object2D` / `Object3D` のための crate 内のトレイト、グリフごとの `begin_shape()` と `index()`、`YAxis::Down` での反転とインデックスの順の入れ替え
+- [x] 書き込みの書式：色・`Ghost`・`Italic`（傾け）・`Shadow`・`Obfuscated`（種で選ぶ）・`HideBox`・下線などの線（`object/stroke.rs` を使う）。影 → 縁取り → 字 の順
+- [x] `max_new_glyphs_per_frame` と `prepare_glyphs`、`ResourceManager` がフレームの区切りを `end_frame` で知る仕組み（§13 グリフを作る負担を分ける）
+- [x] 3D の `Opaque` に影・縁取りを書いた時の警告（§13 3D の影・縁取り）
+- [x] `lonas::wgsl::text_shader` の `Vector` 用（頂点の色をそのまま出す）
 
 **終わりの条件**
 - 作った三角形がすべて xy 平面で反時計回りになるテスト（`YAxis::Up` / `Down` の両方）
