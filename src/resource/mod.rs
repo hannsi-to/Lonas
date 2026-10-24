@@ -11,6 +11,8 @@ use crate::error::LonasError;
 use shader::{CheckedShader, ShaderReflection, check_wgsl};
 use crate::slots::{SlotId, Slots};
 #[cfg(feature = "text")]
+use crate::text::bitmap::{BitmapCache, BitmapGlyph, BitmapKey};
+#[cfg(feature = "text")]
 use crate::text::vector::{GlyphShape, ShapeKey, VectorCache, tessellate_glyph};
 #[cfg(feature = "text")]
 use crate::text::{FontData, TextConfig};
@@ -82,6 +84,9 @@ pub struct ResourceManager {
     // 三角形化したグリフ（§13 ベクター）
     #[cfg(feature = "text")]
     vector_cache: VectorCache,
+    // ラスタライズしたグリフと、グリフの番号（§13 グリフのアトラス）
+    #[cfg(feature = "text")]
+    bitmap_cache: BitmapCache,
     // ResourceManager のフレームの番号。end_frame で進める（§13 書き込み：write_text の細部）
     #[cfg(feature = "text")]
     text_frame: u64,
@@ -111,6 +116,8 @@ impl ResourceManager {
             text_config: config.text,
             #[cfg(feature = "text")]
             vector_cache: VectorCache::default(),
+            #[cfg(feature = "text")]
+            bitmap_cache: BitmapCache::default(),
             #[cfg(feature = "text")]
             text_frame: 0,
             #[cfg(feature = "text")]
@@ -189,6 +196,7 @@ impl ResourceManager {
         self.check_owner(id.0, "FontId");
         self.fonts.remove(id.0).expect("登録解除済みの FontId を解除しました");
         self.vector_cache.remove_font(id);
+        self.bitmap_cache.remove_font(id);
     }
 
     #[cfg(feature = "text")]
@@ -237,6 +245,44 @@ impl ResourceManager {
     #[cfg(feature = "text")]
     pub(crate) fn vector_cache(&self) -> &VectorCache {
         &self.vector_cache
+    }
+
+    // キャッシュになければラスタライズして入れる。limited なら max_new_glyphs_per_frame を超えた分は作らず false
+    // ensure_vector_shape と同じ数を数える（上限は描き方によらず共通、§13 グリフを作る負担を分ける）
+    #[cfg(feature = "text")]
+    pub(crate) fn ensure_bitmap(&mut self, key: BitmapKey, limited: bool) -> bool {
+        if self.bitmap_cache.touch(&key, self.text_frame).is_some() {
+            return true;
+        }
+
+        if limited && self.text_config.max_new_glyphs_per_frame.is_some_and(|max| self.new_glyphs >= max) {
+            return false;
+        }
+
+        let font = self.fonts.get(key.font.0).expect("登録解除済みの FontId です");
+        self.bitmap_cache.insert(font, key, self.text_frame);
+
+        if limited {
+            self.new_glyphs += 1;
+        }
+
+        true
+    }
+
+    // ensure_bitmap の後に呼ぶ
+    #[cfg(feature = "text")]
+    pub(crate) fn bitmap_glyph(&self, key: &BitmapKey) -> &BitmapGlyph {
+        self.bitmap_cache.peek(key).expect("キャッシュにないグリフです")
+    }
+
+    #[cfg(feature = "text")]
+    pub(crate) fn bitmap_cache_mut(&mut self) -> &mut BitmapCache {
+        &mut self.bitmap_cache
+    }
+
+    #[cfg(feature = "text")]
+    pub(crate) fn text_frame(&self) -> u64 {
+        self.text_frame
     }
 
     // end_frame の最後に呼ぶ。キャッシュの追い出し → 作った数を 0 に → フレームの番号を進める

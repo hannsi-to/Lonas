@@ -6,6 +6,7 @@ use crate::config::Blend;
 use crate::math::Vector3f;
 use crate::object::{Object2D, Object3D, stroke};
 use crate::resource::ResourceManager;
+use crate::text::bitmap::{BitmapKey, Hinting};
 use crate::text::layout::{PlacedGlyph, PlacedLine, TextLayout, TextRow};
 use crate::text::vector::{GlyphShape, ShapeKey, signed_area, size_stage};
 use crate::vertex::Vertex;
@@ -19,12 +20,14 @@ pub enum YAxis {
     Up,
 }
 
-// 描き方（§13 描き方の選択）。Bitmap は段階 11、Sdf / Msdf は段階 12 で足す
+// 描き方（§13 描き方の選択）。Sdf / Msdf は段階 12 で足す
 #[non_exhaustive]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum GlyphMethod {
     // 輪郭を三角形化する
     Vector,
+    // 画面上の大きさでラスタライズした画素を、グリフのアトラスから読む。VertexLayout::PositionColorUvNormal・Blend::Alpha で描く
+    Bitmap { hinting: Hinting },
 }
 
 // 書き込みの設定。変えても整形し直さない
@@ -120,10 +123,6 @@ pub fn write_text<T: TextObject>(object: &mut T, resources: &mut ResourceManager
         write.pixel_scale,
     );
 
-    match write.method {
-        GlyphMethod::Vector => {}
-    }
-
     if layout.glyphs().iter().any(|glyph| glyph.style.shadow.is_some() || glyph.style.outline.is_some()) {
         object.check_effects();
     }
@@ -149,16 +148,24 @@ impl ResourceManager {
     pub fn prepare_glyphs(&mut self, layout: &TextLayout, method: GlyphMethod, pixel_scale: f32) {
         assert!(pixel_scale.is_finite() && pixel_scale > 0.0, "pixel_scale は 0 より大きい有限の値にしてください（{pixel_scale}）");
 
-        match method {
-            GlyphMethod::Vector => {}
-        }
-
         for glyph in layout.glyphs().iter().filter(|glyph| !glyph.style.hide_box) {
-            let (body, outline) = shape_keys(layout, glyph, glyph.glyph_id, pixel_scale);
+            match method {
+                GlyphMethod::Vector => {
+                    let (body, outline) = shape_keys(layout, glyph, glyph.glyph_id, pixel_scale);
 
-            self.ensure_vector_shape(body, false);
-            if let Some(outline) = outline {
-                self.ensure_vector_shape(outline, false);
+                    self.ensure_vector_shape(body, false);
+                    if let Some(outline) = outline {
+                        self.ensure_vector_shape(outline, false);
+                    }
+                }
+                GlyphMethod::Bitmap { hinting } => {
+                    let (body, outline) = bitmap_keys(layout, glyph, glyph.glyph_id, pixel_scale, hinting);
+
+                    self.ensure_bitmap(body, false);
+                    if let Some(outline) = outline {
+                        self.ensure_bitmap(outline, false);
+                    }
+                }
             }
         }
     }
@@ -172,6 +179,35 @@ fn shape_keys(layout: &TextLayout, glyph: &PlacedGlyph, glyph_id: u32, pixel_sca
     let outline = glyph.style.outline.map(|_| ShapeKey::new(glyph.font, glyph_id, stage, bold, layout.outline_width()));
 
     (body, outline)
+}
+
+// Bitmap：字の画素と縁取りの画素のキー。画素の大きさは size × pixel_scale を整数に丸めた値
+fn bitmap_keys(layout: &TextLayout, glyph: &PlacedGlyph, glyph_id: u32, pixel_scale: f32, hinting: Hinting) -> (BitmapKey, Option<BitmapKey>) {
+    let pixel_size = (glyph.size * pixel_scale).round().max(1.0) as u32;
+    let bold = if glyph.style.synthetic_bold { layout.bold_weight() } else { 0.0 };
+    let body = BitmapKey::new(glyph.font, glyph_id, pixel_size, hinting, bold, 0.0);
+    let outline = glyph.style.outline.map(|_| BitmapKey::new(glyph.font, glyph_id, pixel_size, hinting, bold, layout.outline_width()));
+
+    (body, outline)
+}
+
+// アトラスの中のグリフの四角形（画素、原点からの位置。y は下向き）
+#[derive(Copy, Clone)]
+struct GlyphQuad {
+    slot: u32,
+    left: i32,
+    top: i32,
+    width: u32,
+    height: u32,
+}
+
+impl GlyphQuad {
+    fn of(resources: &ResourceManager, key: &BitmapKey) -> Self {
+        let glyph = resources.bitmap_glyph(key);
+        let raster = &glyph.raster;
+
+        Self { slot: glyph.slot, left: raster.left, top: raster.top, width: raster.width, height: raster.height }
+    }
 }
 
 struct Writer<'a> {
@@ -200,6 +236,12 @@ impl Writer<'_> {
         }
 
         let glyph_id = if style.obfuscated { obfuscated_glyph(resources, glyph, self.write.obfuscation_seed, index) } else { glyph.glyph_id };
+
+        if let GlyphMethod::Bitmap { hinting } = self.write.method {
+            self.bitmap_glyph(object, resources, glyph, glyph_id, hinting, color);
+            return;
+        }
+
         let (body_key, outline_key) = shape_keys(self.layout, glyph, glyph_id, self.write.pixel_scale);
 
         // 上限で作れない形があれば、このフレームはそのグリフを書かない（§13 グリフを作る負担を分ける）
@@ -237,6 +279,74 @@ impl Writer<'_> {
         }
 
         self.shape(object, body, placement, color);
+    }
+
+    // Bitmap：影 → 縁取り → 字 の順に、アトラスの画素を指す四角形を書く（§13 Bitmap の書き込み）
+    fn bitmap_glyph<T: TextObject>(&self, object: &mut T, resources: &mut ResourceManager, glyph: &PlacedGlyph, glyph_id: u32, hinting: Hinting, color: Color) {
+        let style = glyph.style;
+        let (body_key, outline_key) = bitmap_keys(self.layout, glyph, glyph_id, self.write.pixel_scale, hinting);
+
+        // 上限で作れない画素があれば、このフレームはそのグリフを書かない
+        if !resources.ensure_bitmap(body_key, true) {
+            return;
+        }
+        if let Some(key) = outline_key
+            && !resources.ensure_bitmap(key, true)
+        {
+            return;
+        }
+
+        let body = GlyphQuad::of(resources, &body_key);
+        let outline = outline_key.map(|key| GlyphQuad::of(resources, &key));
+        let (x, y, italic) = (glyph.position.x, glyph.position.y, style.synthetic_italic);
+
+        if let Some(shadow) = style.shadow {
+            let [dx, dy] = shadow.offset();
+            let (shadow_x, shadow_y) = (x + dx * glyph.size, y + dy * glyph.size);
+            let shadow_color = match shadow.color {
+                Some(shadow_color) => with_alpha(shadow_color, 1.0 - style.ghost),
+                None => Color::new(color.r * 0.25, color.g * 0.25, color.b * 0.25, color.a),
+            };
+
+            if let Some(outline) = outline {
+                self.quad(object, outline, shadow_x, shadow_y, italic, shadow_color);
+            }
+            self.quad(object, body, shadow_x, shadow_y, italic, shadow_color);
+        }
+
+        if let (Some(outline), Some(outline_color)) = (outline, style.outline) {
+            self.quad(object, outline, x, y, italic, with_alpha(outline_color, 1.0 - style.ghost));
+        }
+
+        self.quad(object, body, x, y, italic, color);
+    }
+
+    // グリフの原点（TextLayout の座標）を書き込む座標で 1 / pixel_scale の格子に丸め、画素の位置だけずらした四角形を書く
+    // uv は左上が (0, 0)。normal.x はグリフの番号
+    fn quad<T: TextObject>(&self, object: &mut T, quad: GlyphQuad, origin_x: f32, origin_y: f32, italic: f32, color: Color) {
+        if quad.slot == 0 {
+            return;
+        }
+
+        let scale = self.write.pixel_scale;
+        let origin = self.vertex(origin_x, origin_y, color);
+        let (snapped_x, snapped_y) = ((origin.x * scale).round() / scale, (origin.y * scale).round() / scale);
+        let (left, top) = (quad.left as f32, quad.top as f32);
+        let (right, bottom) = (left + quad.width as f32, top + quad.height as f32);
+        let corners = [(left, top, 0.0, 0.0), (right, top, 1.0, 0.0), (right, bottom, 1.0, 1.0), (left, bottom, 0.0, 1.0)];
+        let vertices = corners.map(|(x, y, u, v)| {
+            // y は画素の下向き。ベースラインからの高さは -y
+            let layout_x = (x - italic * y) / scale;
+            let layout_y = y / scale;
+            let vertex_y = match self.write.y_axis {
+                YAxis::Down => snapped_y + layout_y,
+                YAxis::Up => snapped_y - layout_y,
+            };
+
+            Vertex { x: snapped_x + layout_x, y: vertex_y, u, v, n_x: quad.slot as f32, ..origin }
+        });
+
+        write_counter_clockwise(object, &vertices, &[0, 1, 2, 0, 2, 3]);
     }
 
     // キャッシュの形を 1 つの形として書く。YAxis::Down では y の反転で向きが逆になるため、インデックスの順を入れ替える

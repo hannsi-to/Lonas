@@ -2,12 +2,14 @@
 // フォントの登録・整形（TextLayout）・ベクターの書き込み（write_text）
 #![allow(dead_code)] // TextConfig の SDF の値は段階 12 で使う
 
+pub(crate) mod bitmap;
 mod font;
 pub mod format;
 mod layout;
 pub(crate) mod vector;
 mod write;
 
+pub use bitmap::Hinting;
 pub use font::FontFamily;
 pub(crate) use font::FontData;
 pub use format::{
@@ -52,3 +54,6 @@ mod tests;
 
 #[cfg(test)]
 mod write_tests;
+
+#[cfg(test)]
+mod bitmap_tests;

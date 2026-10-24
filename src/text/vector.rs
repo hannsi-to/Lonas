@@ -135,9 +135,9 @@ pub(crate) fn size_stage(screen_size: f32) -> i32 {
     (screen_size.max(1.0).log2().ceil() as i32).clamp(0, MAX_STAGE)
 }
 
-// 輪郭の 1 つの要素（フォントの単位）
+// 輪郭の 1 つの要素（フォントの単位か、ヒンティングした画素の単位。y は上向き）
 #[derive(Copy, Clone)]
-enum Segment {
+pub(crate) enum Segment {
     Move(f32, f32),
     Line(f32, f32),
     Quad(f32, f32, f32, f32),
@@ -146,7 +146,7 @@ enum Segment {
 }
 
 #[derive(Default)]
-struct Recorder(Vec<Segment>);
+pub(crate) struct Recorder(pub Vec<Segment>);
 
 impl OutlinePen for Recorder {
     fn move_to(&mut self, x: f32, y: f32) {
@@ -193,7 +193,7 @@ pub(crate) fn tessellate_glyph(font: &FontData, key: &ShapeKey) -> GlyphShape {
 }
 
 // 合成の太字・縁取りでずらす量（em）。元の形（0, 0）を含む
-fn copy_offsets(bold: f32, outline: f32) -> Vec<[f32; 2]> {
+pub(crate) fn copy_offsets(bold: f32, outline: f32) -> Vec<[f32; 2]> {
     let mut offsets = vec![[0.0, 0.0]];
 
     // 合成の太字：上下左右に bold ずらした複製

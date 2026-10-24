@@ -42,6 +42,8 @@ pub struct LonasConfig {
     pub taa: TaaConfig,
     /// TextureAtlas の大きさ・レイヤー数など（§11）
     pub texture_atlas: TextureAtlasConfig,
+    /// グリフのアトラスの大きさ・レイヤー数など（§13 グリフのアトラス）。text feature によらず持つ
+    pub glyph_atlas: GlyphAtlasConfig,
 }
 
 pub struct MemoryConfig {
@@ -91,10 +93,15 @@ pub struct BindingConfig {
     pub uniform: BindingSlot,
     pub previous_camera: BindingSlot,
     pub previous_instances: BindingSlot,
+    // グリフのアトラス（§13 グリフのアトラス）
+    pub glyph_atlas_r8: BindingSlot,
+    pub glyph_atlas_rgba: BindingSlot,
+    pub glyph_sampler: BindingSlot,
+    pub glyph_rects: BindingSlot,
 }
 
 impl BindingConfig {
-    fn slots(&self) -> [(&'static str, BindingSlot); 9] {
+    fn slots(&self) -> [(&'static str, BindingSlot); 13] {
         [
             ("camera", self.camera),
             ("instances", self.instances),
@@ -105,6 +112,10 @@ impl BindingConfig {
             ("uniform", self.uniform),
             ("previous_camera", self.previous_camera),
             ("previous_instances", self.previous_instances),
+            ("glyph_atlas_r8", self.glyph_atlas_r8),
+            ("glyph_atlas_rgba", self.glyph_atlas_rgba),
+            ("glyph_sampler", self.glyph_sampler),
+            ("glyph_rects", self.glyph_rects),
         ]
     }
 
@@ -201,6 +212,18 @@ pub struct TextureAtlasConfig {
     pub filter: FilterMode,
 }
 
+// グリフのアトラス（§13 グリフのアトラス）。フォーマット（R8Unorm / Rgba8Unorm）ごとに 1 つずつ作る
+pub struct GlyphAtlasConfig {
+    /// 1 レイヤーの幅・高さ（画素、正方形）
+    pub size: u32,
+    /// フォーマットごとに最初に作るレイヤー数
+    pub initial_layers: u32,
+    /// フォーマットごとのレイヤー数の上限。超えたら使わなかったグリフを追い出す
+    pub max_layers: u32,
+    /// 各グリフの周りの余白（画素）
+    pub padding: u32,
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum FilterMode {
     Nearest,
@@ -253,6 +276,14 @@ impl LonasConfig {
             atlas.mip_level_count,
         );
 
+        let glyph_atlas = &self.glyph_atlas;
+        assert!(
+            glyph_atlas.initial_layers > 0 && glyph_atlas.initial_layers <= glyph_atlas.max_layers,
+            "glyph_atlas の initial_layers は 1 以上 max_layers 以下にしてください（{} / {}）",
+            glyph_atlas.initial_layers,
+            glyph_atlas.max_layers,
+        );
+
         let taa = &self.taa;
         assert!(
             (0.0..=1.0).contains(&taa.history_blend_min)
@@ -295,6 +326,10 @@ pub(crate) mod tests {
                 uniform: BindingSlot { group: 2, binding: 0 },
                 previous_camera: BindingSlot { group: 3, binding: 0 },
                 previous_instances: BindingSlot { group: 3, binding: 1 },
+                glyph_atlas_r8: BindingSlot { group: 1, binding: 3 },
+                glyph_atlas_rgba: BindingSlot { group: 1, binding: 4 },
+                glyph_sampler: BindingSlot { group: 1, binding: 5 },
+                glyph_rects: BindingSlot { group: 1, binding: 6 },
             },
             coordinate_system: CoordinateSystemConfig {
                 origin_2d: Origin2D::TopLeft,
@@ -318,6 +353,12 @@ pub(crate) mod tests {
                 padding: 2,
                 mip_level_count: 4,
                 filter: FilterMode::Linear,
+            },
+            glyph_atlas: GlyphAtlasConfig {
+                size: 1024,
+                initial_layers: 1,
+                max_layers: 4,
+                padding: 1,
             },
         }
     }

@@ -7,7 +7,7 @@ use crate::draw::Dimension;
 use crate::resource::ShaderId;
 use crate::resource::shader::{BindingKind, ShaderReflection};
 use crate::vertex::VertexLayout;
-use crate::wgsl::{CAMERA_SIZE, INSTANCE_2D_SIZE, INSTANCE_3D_SIZE, TEXTURE_RECT_SIZE};
+use crate::wgsl::{CAMERA_SIZE, GLYPH_RECT_SIZE, INSTANCE_2D_SIZE, INSTANCE_3D_SIZE, TEXTURE_RECT_SIZE};
 
 pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
@@ -130,6 +130,7 @@ fn check_reflection(reflection: &ShaderReflection, bindings: &BindingConfig, dim
     check_array("previous_instances", bindings.previous_instances, instance_size);
     check_array("instance_order", bindings.instance_order, 4);
     check_array("texture_rects", bindings.texture_rects, TEXTURE_RECT_SIZE);
+    check_array("glyph_rects", bindings.glyph_rects, GLYPH_RECT_SIZE);
 }
 
 fn create_pipeline(device: &wgpu::Device, layout: &wgpu::PipelineLayout, shader: &ShaderEntry, key: PipelineKey) -> wgpu::RenderPipeline {
@@ -250,6 +251,12 @@ pub(crate) fn bind_group_layouts(device: &wgpu::Device, bindings: &BindingConfig
         has_dynamic_offset: true,
         min_binding_size: wgpu::BufferSize::new(CAMERA_SIZE as u64),
     };
+    // グリフのアトラス（R8Unorm / Rgba8Unorm、線形のまま読む）
+    let glyph_texture = wgpu::BindingType::Texture {
+        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+        view_dimension: wgpu::TextureViewDimension::D2Array,
+        multisampled: false,
+    };
     let entries = [
         (bindings.camera, camera),
         (bindings.instances, storage),
@@ -267,6 +274,10 @@ pub(crate) fn bind_group_layouts(device: &wgpu::Device, bindings: &BindingConfig
         (bindings.uniform, storage),
         (bindings.previous_camera, camera),
         (bindings.previous_instances, storage),
+        (bindings.glyph_atlas_r8, glyph_texture),
+        (bindings.glyph_atlas_rgba, glyph_texture),
+        (bindings.glyph_sampler, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
+        (bindings.glyph_rects, storage),
     ];
 
     (0..=bindings.max_group())

@@ -15,6 +15,7 @@ use crate::memory::ManagerId;
 use crate::resource::shader::BindingKind;
 use crate::resource::{ResourceChange, ResourceManager, ShaderId};
 use crate::texture::atlas::Atlas;
+use crate::texture::glyph_atlas::GlyphAtlas;
 use frame::{DrawResources, FramePlan, PlanInput, Strides};
 pub(crate) use frame::TargetFormat;
 use pipeline::{PipelineCache, ShaderEntry};
@@ -45,6 +46,7 @@ pub(crate) struct Renderer {
     pipelines: PipelineCache,
     culling: Culling,
     atlas: Atlas,
+    glyph_atlas: GlyphAtlas,
     uniforms: HashMap<(ManagerId, ShaderId), UniformBuffer>,
     // uniform を使わないシェーダーのバインディングに置く、すべて 0 のバッファ
     empty_uniform: wgpu::Buffer,
@@ -85,6 +87,7 @@ impl Renderer {
             pipelines: PipelineCache::new(),
             culling: create_culling(device),
             atlas: Atlas::new(device, queue, config),
+            glyph_atlas: GlyphAtlas::new(device, queue, config),
             uniforms: HashMap::new(),
             empty_uniform: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("Lonas empty uniform"),
@@ -129,6 +132,13 @@ impl Renderer {
                 }
                 ResourceChange::TextureRemoved(id) => self.atlas.remove(id.slot()),
             }
+        }
+
+        // グリフ：そのフレームに作った・追い出されていたのに使ったグリフを置く（§13 グリフの番号と、追い出した後）
+        #[cfg(feature = "text")]
+        {
+            let frame = resources.text_frame();
+            self.glyph_atlas.apply(device, queue, resources.bitmap_cache_mut(), frame);
         }
     }
 
@@ -351,6 +361,10 @@ impl Renderer {
             (b.uniform, uniform.as_entire_binding()),
             (b.previous_camera, previous_camera),
             (b.previous_instances, previous_instances.as_entire_binding()),
+            (b.glyph_atlas_r8, wgpu::BindingResource::TextureView(self.glyph_atlas.r8_view())),
+            (b.glyph_atlas_rgba, wgpu::BindingResource::TextureView(self.glyph_atlas.rgba_view())),
+            (b.glyph_sampler, wgpu::BindingResource::Sampler(self.glyph_atlas.sampler())),
+            (b.glyph_rects, self.glyph_atlas.rects().as_entire_binding()),
         ];
 
         self.user_layouts
@@ -371,6 +385,11 @@ impl Renderer {
     #[cfg(test)]
     pub(crate) fn atlas(&self) -> &Atlas {
         &self.atlas
+    }
+
+    #[cfg(test)]
+    pub(crate) fn glyph_atlas(&self) -> &GlyphAtlas {
+        &self.glyph_atlas
     }
 
     #[cfg(test)]

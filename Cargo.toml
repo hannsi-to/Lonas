@@ -14,6 +14,7 @@ pollster = "1.0.1"
 raw-window-handle = "0.6"
 skrifa = { version = "0.49", optional = true }
 unicode-linebreak = { version = "0.1.5", optional = true }
+zeno = { version = "0.3.3", optional = true }
 wgpu = "30"
 
 [features]
@@ -21,7 +22,7 @@ default = ["image", "text"]
 # PNG / JPEG の読み込み（ResourceManager::register_texture）。外すと register_texture_rgba のみ（§11 画像の形式）
 image = ["dep:image"]
 # テキストの整形と描画（§13 Cargo の feature）。外すと ResourceConfig に text の項目がなくなる
-text = ["dep:harfrust", "dep:skrifa", "dep:unicode-linebreak", "dep:lyon_tessellation"]
+text = ["dep:harfrust", "dep:skrifa", "dep:unicode-linebreak", "dep:lyon_tessellation", "dep:zeno"]
 
 [dev-dependencies]
 winit = "0.30"
@@ -34,4 +35,9 @@ required-features = ["image", "text"]
 # フォントの登録と write_text を使う
 [[example]]
 name = "text"
+required-features = ["text"]
+
+# Bitmap（グリフのアトラス）を使う
+[[example]]
+name = "text_bitmap"
 required-features = ["text"]
