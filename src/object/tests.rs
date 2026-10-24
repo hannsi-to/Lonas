@@ -384,6 +384,87 @@ fn staging_chunks_are_reused() {
     assert_eq!(active + free + in_flight, total, "GPU が追いついた後にチャンクが増えました");
 }
 
+// 形ごとに、index() を呼んだ形はそのインデックス、呼ばなかった形は paint_type で作る（§10 インデックス）
+#[test]
+fn index_and_automatic_shapes_can_be_mixed() {
+    let Some(mut gpu) = headless(sample_config()) else { return };
+    let mut resources = ResourceManager::new();
+    let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), VertexLayout::Position);
+    let mut object = Object2D::new(&gpu);
+    object.memory_update_type(MemoryUpdateType::Dynamic).paint_type(PaintType::Fill);
+    object.add_instance(Instance2D::default());
+
+    // 正方形 2 つ。first / second が true の形は index() で指定する（番号は Object 全体の通し番号）
+    let draw = |gpu: &mut GpuContext, object: &mut Object2D, manager: &mut DrawManager2D, first: bool, second: bool| {
+        gpu.begin_frame();
+        object.begin();
+        for (shape, left) in [(0, 0.0), (1, 200.0)] {
+            if shape == 1 {
+                object.begin_shape();
+            }
+            for (x, y) in [(left, 0.0), (left + 100.0, 0.0), (left + 100.0, 100.0), (left, 100.0)] {
+                object.vertex(Vertex::new_position(x, y, 0.0));
+            }
+            if [first, second][shape] {
+                let base = shape as u32 * 4;
+                for i in [0, 1, 2, 2, 3, 0] {
+                    object.index(base + i);
+                }
+            }
+        }
+        object.end(manager);
+    };
+    let uses_only = |indices: &[u32], range: std::ops::Range<u32>| indices.iter().all(|i| range.contains(i));
+
+    // 1 つ目は index()、2 つ目は Fill で自動
+    draw(&mut gpu, &mut object, &mut manager, true, false);
+    let indices = object.core.index_values().to_vec();
+    assert_eq!(indices[..6], [0, 1, 2, 2, 3, 0]);
+    assert_eq!(indices.len(), 12);
+    assert!(uses_only(&indices[6..], 4..8));
+    end_frame(&mut gpu, &mut resources, &mut manager);
+
+    // 同じなら何も送らない
+    draw(&mut gpu, &mut object, &mut manager, true, false);
+    assert!(manager.core.heap_requests.is_empty());
+    end_frame(&mut gpu, &mut resources, &mut manager);
+
+    // 2 つ目も index() にすると、書いたとおりになる
+    draw(&mut gpu, &mut object, &mut manager, true, true);
+    assert_eq!(object.core.index_values(), [0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4]);
+    end_frame(&mut gpu, &mut resources, &mut manager);
+
+    // 1 つ目の index() をやめると、1 つ目を自動で作る
+    draw(&mut gpu, &mut object, &mut manager, false, true);
+    let indices = object.core.index_values().to_vec();
+    assert!(uses_only(&indices[..6], 0..4));
+    assert_eq!(indices[6..], [4, 5, 6, 6, 7, 4]);
+    end_frame(&mut gpu, &mut resources, &mut manager);
+}
+
+// Stroke は index() と混ぜられない。index() を呼んだフレームは、呼ばなかった形を描かない（§10 インデックス）
+#[test]
+fn stroke_shapes_are_not_drawn_with_index() {
+    let Some(mut gpu) = headless(sample_config()) else { return };
+    let mut manager = DrawManager2D::new(&mut gpu, camera_2d(), VertexLayout::Position);
+    let mut object = Object2D::new(&gpu);
+    let stroke = PaintType::Stroke { line_width: 2.0, joint_type: crate::object::JointType::Miter, strip: false, dash: None };
+    object.memory_update_type(MemoryUpdateType::Dynamic).paint_type(stroke);
+    object.add_instance(Instance2D::default());
+
+    gpu.begin_frame();
+    object.begin();
+    triangle(&mut object, 0.0);
+    object.index(0).index(1).index(2);
+    object.begin_shape();
+    triangle(&mut object, 5.0);
+    object.end(&mut manager);
+
+    // 元の頂点を送り、index() の三角形だけを描く
+    assert_eq!(object.core.uploaded_vertices(), object.core.vertices());
+    assert_eq!(object.core.index_values(), [0, 1, 2]);
+}
+
 // 形の区切りが変われば、頂点が同じでもインデックスを作り直す（§10 形の区切り）
 #[test]
 fn indices_follow_shape_breaks() {

@@ -86,6 +86,8 @@ impl PaintType {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Generated {
     pub indices: Vec<u32>,
+    // 形ごとの indices の範囲（飛ばした形・描かない形は空）
+    pub shapes: Vec<Range<usize>>,
     // 外周の頂点が 3 個未満で描かなかった形がある（log で警告する、§10）
     pub has_leftover: bool,
 }
@@ -163,22 +165,28 @@ fn close_ring(shape: &mut Shape, ring: Range<usize>, is_hole: bool) {
 }
 
 // Fill のインデックスを、形ごとに別々に作る。breaks は begin_shape() / begin_hole() の区切り
-pub(crate) fn fill(positions: &[Vector3f], breaks: &[Break], winding: Winding) -> Generated {
-    let mut generated = Generated { indices: Vec::new(), has_leftover: false };
+// skip[i] が true の形（index() で指定した形）は作らない。skip が短ければ、足りない分は作る
+pub(crate) fn fill(positions: &[Vector3f], breaks: &[Break], skip: &[bool], winding: Winding) -> Generated {
+    let mut generated = Generated { indices: Vec::new(), shapes: Vec::new(), has_leftover: false };
 
-    for shape in shapes(positions.len(), breaks) {
-        if shape.outer.len() < 3 {
+    for (index, shape) in shapes(positions.len(), breaks).into_iter().enumerate() {
+        let start = generated.indices.len();
+
+        if skip.get(index).copied().unwrap_or(false) {
+            // index() で指定した形
+        } else if shape.outer.len() < 3 {
             // 外周の頂点が 3 個未満の形は描かない
             generated.has_leftover |= !shape.outer.is_empty();
-            continue;
+        } else {
+            let base = shape.outer.start;
+            let rings: Vec<Range<usize>> = shape.rings().map(|ring| ring.start - base..ring.end - base).collect();
+
+            generated
+                .indices
+                .extend(triangulate_polygon(&positions[base..shape.end()], &rings, winding).into_iter().map(|i| (base + i as usize) as u32));
         }
 
-        let base = shape.outer.start;
-        let rings: Vec<Range<usize>> = shape.rings().map(|ring| ring.start - base..ring.end - base).collect();
-
-        generated
-            .indices
-            .extend(triangulate_polygon(&positions[base..shape.end()], &rings, winding).into_iter().map(|i| (base + i as usize) as u32));
+        generated.shapes.push(start..generated.indices.len());
     }
 
     generated
@@ -596,11 +604,11 @@ mod tests {
     #[test]
     fn fewer_than_three_vertices_draw_nothing() {
         for count in 1..3 {
-            let generated = fill(&points(&[(0.0, 0.0), (1.0, 0.0)][..count]), &[], Winding::CounterClockwiseXy);
+            let generated = fill(&points(&[(0.0, 0.0), (1.0, 0.0)][..count]), &[], &[], Winding::CounterClockwiseXy);
             assert!(generated.indices.is_empty() && generated.has_leftover);
         }
 
-        let empty = fill(&[], &[], Winding::CounterClockwiseXy);
+        let empty = fill(&[], &[], &[], Winding::CounterClockwiseXy);
         assert!(empty.indices.is_empty() && !empty.has_leftover);
     }
 
@@ -608,7 +616,7 @@ mod tests {
     fn check_polygon(xy: &[(f32, f32)]) {
         let positions = points(xy);
         let projected: Vec<Vector2f> = positions.iter().map(|p| Vector2f::new(p.x, p.y)).collect();
-        let indices = fill(&positions, &[], Winding::CounterClockwiseXy).indices;
+        let indices = fill(&positions, &[], &[], Winding::CounterClockwiseXy).indices;
 
         assert_eq!(indices.len(), (xy.len() - 2) * 3, "三角形の数は頂点数 - 2");
         assert!((area_of_triangles(&positions, &indices) - signed_area(&projected).abs()).abs() < 1e-3);
@@ -698,9 +706,9 @@ mod tests {
             (b - a).cross(c - a)
         };
 
-        let forward = fill(&square, &[], Winding::FollowInput).indices;
+        let forward = fill(&square, &[], &[], Winding::FollowInput).indices;
         let reversed_square: Vec<Vector3f> = square.iter().rev().copied().collect();
-        let backward = fill(&reversed_square, &[], Winding::FollowInput).indices;
+        let backward = fill(&reversed_square, &[], &[], Winding::FollowInput).indices;
 
         assert_eq!(forward.len(), 6);
         // 入力の向きが逆なら、三角形の表も逆になる
@@ -732,7 +740,7 @@ mod tests {
     // 三角形がすべて反時計回りで、面積が expected_area、数が頂点数 + 2 × 穴の数 - 2 で、
     // どの三角形の重心も穴（正方形 (x, y, size)）の外にあることを確かめる
     fn assert_holes_triangulated(positions: &[Vector3f], starts: &[Break], hole_squares: &[(f32, f32, f32)], expected_area: f32) {
-        let indices = fill(positions, starts, Winding::CounterClockwiseXy).indices;
+        let indices = fill(positions, starts, &[], Winding::CounterClockwiseXy).indices;
         let xy = |i: u32| Vector2f::new(positions[i as usize].x, positions[i as usize].y);
 
         assert_eq!(indices.len() / 3, positions.len() + 2 * hole_squares.len() - 2);
@@ -812,7 +820,7 @@ mod tests {
             &[vec![(1.0, 1.0), (2.0, 2.0)], vec![(3.0, 3.0), (4.0, 4.0), (5.0, 5.0)]],
         );
         starts.push(Break::Hole(positions.len()));
-        let indices = fill(&positions, &starts, Winding::CounterClockwiseXy).indices;
+        let indices = fill(&positions, &starts, &[], Winding::CounterClockwiseXy).indices;
 
         assert_eq!(indices.len(), 6);
         assert!((area_of_triangles(&positions, &indices) - 100.0).abs() < 1e-4);
@@ -826,7 +834,7 @@ mod tests {
         let mut corners = square(0.0, 0.0, 1.0, false);
         corners.extend(square(5.0, 0.0, 1.0, false));
         let positions = points(&corners);
-        let indices = fill(&positions, &[Break::Shape(4)], Winding::CounterClockwiseXy).indices;
+        let indices = fill(&positions, &[Break::Shape(4)], &[], Winding::CounterClockwiseXy).indices;
 
         assert_eq!(indices.len() / 3, 2 * 2);
         assert!(indices.chunks(3).all(|t| t.iter().all(|&i| i < 4) || t.iter().all(|&i| i >= 4)));
@@ -834,10 +842,22 @@ mod tests {
     }
 
     #[test]
+    fn shapes_given_by_index_are_skipped() {
+        // 正方形 2 つ。1 つ目は index() で指定したものとして作らない
+        let mut corners = square(0.0, 0.0, 1.0, false);
+        corners.extend(square(5.0, 0.0, 1.0, false));
+        let generated = fill(&points(&corners), &[Break::Shape(4)], &[true], Winding::CounterClockwiseXy);
+
+        assert_eq!(generated.shapes[0], 0..0);
+        assert_eq!(generated.shapes[1], 0..6);
+        assert!(generated.indices.iter().all(|&i| (4..8).contains(&i)));
+    }
+
+    #[test]
     fn short_shapes_are_skipped() {
         // 三角形・2 頂点・三角形。2 頂点の形だけ描かない
         let positions = points(&[(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (3.0, 0.0), (4.0, 0.0), (5.0, 0.0), (6.0, 0.0), (5.0, 1.0)]);
-        let generated = fill(&positions, &[Break::Shape(3), Break::Shape(5)], Winding::CounterClockwiseXy);
+        let generated = fill(&positions, &[Break::Shape(3), Break::Shape(5)], &[], Winding::CounterClockwiseXy);
         let mut used: Vec<u32> = generated.indices.clone();
         used.sort_unstable();
 
@@ -854,7 +874,7 @@ mod tests {
         corners.extend(square(24.0, 4.0, 2.0, true));
         let positions = points(&corners);
         let breaks = [Break::Hole(4), Break::Shape(8), Break::Hole(12)];
-        let indices = fill(&positions, &breaks, Winding::CounterClockwiseXy).indices;
+        let indices = fill(&positions, &breaks, &[], Winding::CounterClockwiseXy).indices;
 
         assert_eq!(indices.len() / 3, 2 * (8 + 2 - 2));
         assert!((area_of_triangles(&positions, &indices) - 2.0 * 96.0).abs() < 1e-3);
@@ -869,7 +889,7 @@ mod tests {
         let hole = [(4.0, 4.0), (6.0, 4.0), (6.0, 6.0), (4.0, 6.0)];
         let to_xz = |(x, z): (f32, f32)| Vector3f::new(x, 1.0, z);
         let positions: Vec<Vector3f> = outer.iter().chain(&hole).copied().map(to_xz).collect();
-        let indices = fill(&positions, &[Break::Hole(4)], Winding::FollowInput).indices;
+        let indices = fill(&positions, &[Break::Hole(4)], &[], Winding::FollowInput).indices;
 
         assert_eq!(indices.len() / 3, 8 + 2 - 2);
         for t in indices.chunks(3) {
