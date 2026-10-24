@@ -220,7 +220,11 @@ impl Writer<'_> {
         if let Some(shadow) = style.shadow {
             let [dx, dy] = shadow.offset();
             let shadowed = Placement { origin_x: placement.origin_x + dx * glyph.size, origin_y: placement.origin_y + dy * glyph.size, ..placement };
-            let shadow_color = Color::new(color.r * 0.25, color.g * 0.25, color.b * 0.25, color.a);
+            // 指定がなければ字の色の rgb を 0.25 倍（§13 書き込み：write_text の細部）
+            let shadow_color = match shadow.color {
+                Some(shadow_color) => with_alpha(shadow_color, alpha),
+                None => Color::new(color.r * 0.25, color.g * 0.25, color.b * 0.25, color.a),
+            };
 
             if let Some(outline) = outline {
                 self.shape(object, outline, shadowed, shadow_color);

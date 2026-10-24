@@ -186,6 +186,8 @@ pub struct Shadow {
     /// どちらにずらすか。度。**右向きが 0 で、時計回り**。
     /// 45 なら右下に落ちる。
     pub angle: f32,
+    /// 影の色。`None` なら字の色の rgb を 0.25 倍したもの（不透明度は字と同じ）。
+    pub color: Option<Color>,
 }
 
 impl Default for Shadow {
@@ -193,13 +195,20 @@ impl Default for Shadow {
         Self {
             distance: DEFAULT_SHADOW_DISTANCE,
             angle: DEFAULT_SHADOW_ANGLE,
+            color: None,
         }
     }
 }
 
 impl Shadow {
     pub fn new(distance: f32, angle: f32) -> Self {
-        Self { distance, angle }
+        Self { distance, angle, color: None }
+    }
+
+    /// 影の色を指定する。
+    pub fn color(mut self, color: Color) -> Self {
+        self.color = Some(color);
+        self
     }
 
     /// ずらし幅。em 単位。y は**下向きが正**。
@@ -624,16 +633,7 @@ fn parse_code(body: &str, position: usize) -> Result<TextFormat, TextFormatError
             Ok(TextFormat::HideBox)
         }
 
-        "shadow" => {
-            let distance = optional_number(&arguments, 0, &lowered)
-                .map_err(fail)?
-                .unwrap_or(DEFAULT_SHADOW_DISTANCE);
-            let angle = optional_number(&arguments, 1, &lowered)
-                .map_err(fail)?
-                .unwrap_or(DEFAULT_SHADOW_ANGLE);
-
-            Ok(TextFormat::Shadow(Shadow::new(distance, angle)))
-        }
+        "shadow" => Ok(TextFormat::Shadow(parse_shadow(&arguments, &lowered).map_err(fail)?)),
 
         "outline" => {
             Ok(TextFormat::Outline(parse_color(&arguments).map_err(fail)?))
@@ -755,6 +755,33 @@ fn parse_hex(digits: &str) -> Result<Color, TextFormatErrorKind> {
     let [red, green, blue, alpha] = channels;
 
     Ok(Color::new(red, green, blue, alpha))
+}
+
+/// 影は `距離 角度 色`。数は前から距離・角度の順で、色は数の後ろに 1 つだけ（16 進か名前）。
+/// `r g b` の数の並びは距離・角度と見分けられないため使えない。
+fn parse_shadow(arguments: &[&str], format: &str) -> Result<Shadow, TextFormatErrorKind> {
+    let numbers = arguments.iter().take(2).take_while(|argument| argument.parse::<f32>().is_ok()).count();
+    let rest = &arguments[numbers..];
+
+    if rest.len() > 1 {
+        return Err(TextFormatErrorKind::TooManyArguments {
+            format: String::from(format),
+            expected: numbers + 1,
+            found: arguments.len(),
+        });
+    }
+
+    let numeric = &arguments[..numbers];
+    let mut shadow = Shadow::new(
+        optional_number(numeric, 0, format)?.unwrap_or(DEFAULT_SHADOW_DISTANCE),
+        optional_number(numeric, 1, format)?.unwrap_or(DEFAULT_SHADOW_ANGLE),
+    );
+
+    if let Some(color) = rest.first() {
+        shadow = shadow.color(parse_color(&[color])?);
+    }
+
+    Ok(shadow)
 }
 
 /// 線の指定。省略したぶんは既定のまま。
@@ -1116,6 +1143,27 @@ mod tests {
             vec![TextFormat::Shadow(Shadow::new(0.1, 90.0))],
         );
         assert_eq!(formats("§[shadow]"), vec![TextFormat::shadow()]);
+    }
+
+    /// 影の色は数の後ろに 1 つだけ。数を省いて色だけでも書ける。
+    #[test]
+    fn shadow_takes_a_color_after_the_numbers() {
+        let red = NamedColor::Red.color();
+
+        assert_eq!(formats("§[shadow 0.1 90 red]"), vec![TextFormat::Shadow(Shadow::new(0.1, 90.0).color(red))]);
+        assert_eq!(formats("§[shadow 0.1 #ff0000]"), vec![TextFormat::Shadow(Shadow::new(0.1, DEFAULT_SHADOW_ANGLE).color(red))]);
+        assert_eq!(formats("§[shadow #f00]"), vec![TextFormat::Shadow(Shadow::default().color(red))]);
+
+        assert!(matches!(
+            Formatted::parse("§[shadow 0.1 red blue]").expect_err("色は 1 つだけ").kind,
+            TextFormatErrorKind::TooManyArguments { .. },
+        ));
+        assert!(matches!(
+            Formatted::parse("§[shadow 0.1 90 そら]").expect_err("そんな色は無い").kind,
+            TextFormatErrorKind::UnknownColor(_),
+        ));
+        // 3 つ目の数は色として読めない
+        assert!(Formatted::parse("§[shadow 0.1 90 0.5]").is_err());
     }
 
     /// 角度は右向きが 0 の時計回り。45 度なら右下。

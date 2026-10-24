@@ -21,7 +21,7 @@ use winit::window::{Window, WindowId};
 const TEXT: &str = "§[size 40]書式の例§[/size]§[ln]\
 §[red]赤い字§[/]と§[bold]太い字§[/]と§[italic]斜体§[/]、\
 §[u]下線§[/]と§[u 0.04 round 2]2 本の下線§[/]と§[s]打消し§[/]、\
-§[shadow 0.12]影§[/]と§[outline #000]§[yellow]縁取り§[/]と§[ghost 0.6]ghost§[/]。\
+§[shadow 0.12]影§[/]と§[shadow 0.12 45 #000]色の影§[/]と§[outline #000]§[yellow]縁取り§[/]と§[ghost 0.6]ghost§[/]。\
 日本語の文章は、字の間で折り返して表示する。句読点は行頭に来ない。";
 
 fn main() {

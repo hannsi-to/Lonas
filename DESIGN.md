@@ -2426,7 +2426,7 @@ pub enum TextFormat {
 }
 
 pub struct LineDecoration { pub line_width: f32, pub joint_type: JointType, pub lines: u32 } // 太さは em に対する割合。lines が 2 なら二重線
-pub struct Shadow { pub distance: f32, pub angle: f32 } // distance は em に対する割合、angle は度（右が 0、画面上で時計回り）
+pub struct Shadow { pub distance: f32, pub angle: f32, pub color: Option<Color> } // distance は em に対する割合、angle は度（右が 0、画面上で時計回り）。color は下記
 ```
 
 - 色は gueiz の `[f32; 4]` ではなく `Color`（sRGB、§11 色）で受け取る。頂点の色と扱いを揃えるため
@@ -2558,10 +2558,13 @@ pub struct PlacedLine {
 
 - 頂点は `Vertex` の位置と色だけを書く（`uv`・`normal` は 0）。色は sRGB のまま入れる（§11 色）
 - 字の色は `GlyphStyle::color`（なければ `TextWrite::color`）。不透明度に `1 − ghost` を掛ける
-- **影の色は、字の色の rgb を 0.25 倍したもの**（不透明度は字と同じ）。gueiz と同じ。影は字と縁取りの形を、`Shadow::offset() × size` だけずらして書く（y は `TextLayout` の座標で下向き）
+- **決定：影の色は `Shadow::color` で指定できる。**`None` なら字の色の rgb を 0.25 倍したもの（不透明度は字と同じ。gueiz と同じ）。`Some` ならその色で、不透明度に `1 − ghost` を掛ける（縁取りの色と同じ扱い）。影は字と縁取りの形を、`Shadow::offset() × size` だけずらして書く（y は `TextLayout` の座標で下向き）
+  - 書き方：`§[shadow 距離 角度 色]`。数は前から距離・角度の順で、省いたものは既定値。色は数の後ろに 1 つだけ、`#rrggbb` などの 16 進か名前の付いた色で書く（`§[shadow #000]`・`§[shadow 0.1 #f00]` も書ける）。`r g b` の数の並びは距離・角度と見分けられないため、影では使えない
+  - 却下案：影の色を `TextWrite` に置く。文の中の場所ごとに変えられない
+  - 却下案：影の色を別の書式（`ShadowColor`）にする。影と色を別々に戻せてしまい、書式の数も増える
 - 縁取りの色は `TextFormat::Outline` の色。不透明度に `1 − ghost` を掛ける
 - **注意：`Ghost` と、不透明度が 1 未満の色は、`Blend::Alpha` で描く `Object*` でだけ透ける。**`Opaque` は不透明度を捨てる（§10 描画順）。`write_text` は、`Ghost` のあるテキストを `blend()` で `Opaque` を指定した `Object*` に書いた時に、`Object*` ごとに一度だけ `log` で警告する（`blend()` を呼んでいない場合は分からないため警告しない。§13 3D の影・縁取りと同じ）
-- **注意：影の色は字より暗いため、暗い背景の上ではほとんど見えない。**また `Shadow` の既定の距離（0.06 em）は、24px の字で 1.4px ほど。目立たせたい場合は距離を大きくする
+- **注意：既定の影の色は字より暗いため、暗い背景の上ではほとんど見えない。**その場合は `Shadow::color` を指定する。また `Shadow` の既定の距離（0.06 em）は、24px の字で 1.4px ほど。目立たせたい場合は距離を大きくする
 - `Italic`（合成）は、フォントの座標の y（ベースラインからの高さ）に比例して x をずらす。影・縁取りも同じく傾ける
 - `HideBox` は、字・影・縁取りの代わりに、送り幅 × `TextRow::height` の四角形（行の上端から）を字の色で書く
 - `Obfuscated` は、候補の字（gueiz の `OBFUSCATION_POOL`、英数字と記号）のうち、そのグリフのフォントにある字から、`(obfuscation_seed, TextLayout の中のグリフの番号)` の hash で選ぶ。フォントに候補がなければ元の字を書く

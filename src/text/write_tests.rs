@@ -422,20 +422,29 @@ fn shadow_is_drawn_behind_and_ghost_needs_alpha_blending() {
         gpu.end_frame(&mut resources, &mut [SurfaceDraw { surface, clear_color: Some(Color::BLACK), draw_managers: &mut [&mut manager] }])
             .unwrap();
         let pixels = gpu.read_pixels(surface);
-        // ベースラインの少し上の 1 行の赤の値
+        // ベースラインの少し上の 1 行の rgb
         let y = (layout.rows()[0].baseline - 10.0) as u32;
-        (0..SIZE).map(|x| pixels[(y * SIZE + x) as usize][0]).collect::<Vec<u8>>()
+        (0..SIZE).map(|x| {
+            let [r, g, b, _] = pixels[(y * SIZE + x) as usize];
+            [r, g, b]
+        })
+        .collect::<Vec<[u8; 3]>>()
     };
 
     // 影：字（255）の右に、字の色の rgb を 0.25 倍した影（sRGB で 64 前後）が出る
+    let white = [255, 255, 255];
     let shadowed = draw("§[shadow 0.3 0]l", Blend::Opaque);
-    assert!(shadowed.contains(&255));
-    let glyph_end = shadowed.iter().rposition(|&value| value == 255).unwrap();
-    assert!(shadowed[glyph_end + 1..].iter().any(|&value| (60..=68).contains(&value)), "{shadowed:?}");
+    let glyph_end = shadowed.iter().rposition(|&pixel| pixel == white).expect("字が描かれていません");
+    assert!(shadowed[glyph_end + 1..].iter().any(|pixel| pixel.iter().all(|&value| (60..=68).contains(&value))), "{shadowed:?}");
+
+    // 色を指定した影は、その色で出る
+    let colored = draw("§[shadow 0.3 0 red]l", Blend::Opaque);
+    let glyph_end = colored.iter().rposition(|&pixel| pixel == white).expect("字が描かれていません");
+    assert!(colored[glyph_end + 1..].contains(&[255, 0, 0]), "{colored:?}");
 
     // Ghost：Blend::Alpha なら透け、Opaque では不透明度が捨てられて透けない（§13 書き込みの細部）
     let alpha = draw("§[ghost 0.5]§[hidebox]A", Blend::Alpha);
-    assert!((180..=195).contains(&alpha[2]), "{alpha:?}");
+    assert!((180..=195).contains(&alpha[2][0]), "{alpha:?}");
     let opaque = draw("§[ghost 0.5]§[hidebox]A", Blend::Opaque);
-    assert_eq!(opaque[2], 255);
+    assert_eq!(opaque[2], white);
 }
