@@ -58,6 +58,8 @@ pub(crate) mod sealed {
         fn new_shape(&mut self);
         // 影・縁取りのあるテキストを書く時に呼ぶ（§13 3D の影・縁取り）
         fn check_effects(&mut self);
+        // Ghost で透かす字を書く時に呼ぶ（§13 書き込みの細部）
+        fn check_ghost(&mut self);
     }
 }
 
@@ -83,6 +85,16 @@ macro_rules! text_target {
             fn check_effects(&mut self) {
                 let check: fn(&mut $name) = $check;
                 check(self);
+            }
+
+            // blend() を呼んでいない場合は LonasConfig の値が使われ、Object* からは分からないため警告しない
+            fn check_ghost(&mut self) {
+                if self.core.blend == Some(Blend::Opaque) {
+                    self.core.warn_once(
+                        "text_opaque_ghost",
+                        "Ghost のあるテキストを Blend::Opaque の Object に書きました。不透明度が捨てられるため透けません。Blend::Alpha で描いてください",
+                    );
+                }
             }
         }
     };
@@ -114,6 +126,10 @@ pub fn write_text<T: TextObject>(object: &mut T, resources: &mut ResourceManager
 
     if layout.glyphs().iter().any(|glyph| glyph.style.shadow.is_some() || glyph.style.outline.is_some()) {
         object.check_effects();
+    }
+
+    if layout.glyphs().iter().any(|glyph| glyph.style.ghost > 0.0) || layout.lines().iter().any(|line| line.ghost > 0.0) {
+        object.check_ghost();
     }
 
     let writer = Writer { write, layout };

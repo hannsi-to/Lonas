@@ -21,7 +21,7 @@ use winit::window::{Window, WindowId};
 const TEXT: &str = "§[size 40]書式の例§[/size]§[ln]\
 §[red]赤い字§[/]と§[bold]太い字§[/]と§[italic]斜体§[/]、\
 §[u]下線§[/]と§[u 0.04 round 2]2 本の下線§[/]と§[s]打消し§[/]、\
-§[shadow]影§[/]と§[outline #000]§[yellow]縁取り§[/]と§[ghost 0.6]ghost§[/]。\
+§[shadow 0.12]影§[/]と§[outline #000]§[yellow]縁取り§[/]と§[ghost 0.6]ghost§[/]。\
 日本語の文章は、字の間で折り返して表示する。句読点は行頭に来ない。";
 
 fn main() {
@@ -97,8 +97,9 @@ impl State {
         manager_3d.look_at(camera, Vector3f::ZERO, Vector3f::Y);
 
         // テキストの Object* は Dynamic。paint_type() は呼ばない（すべての形を index() で書く）
+        // Ghost で透かすため Blend::Alpha（Opaque では不透明度が捨てられる）
         let mut text_2d = Object2D::new(&gpu);
-        text_2d.memory_update_type(MemoryUpdateType::Dynamic).shader(shader_2d).cull_mode(CullMode::None);
+        text_2d.memory_update_type(MemoryUpdateType::Dynamic).shader(shader_2d).cull_mode(CullMode::None).blend(Blend::Alpha);
         text_2d.add_instance(Instance2D::default());
 
         // 3D で影・縁取りを描くため Blend::Alpha（§13 3D の影・縁取り）
@@ -159,7 +160,8 @@ impl State {
         self.gpu
             .end_frame(&mut self.resources, &mut [SurfaceDraw {
                 surface: self.surface,
-                clear_color: Some(Color::rgb(0.2, 0.25, 0.3)),
+                // 影は字の色の 0.25 倍で暗くなるため、暗すぎない背景にする
+                clear_color: Some(Color::rgb(0.45, 0.5, 0.55)),
                 draw_managers: &mut [&mut self.manager_3d, &mut self.manager_2d],
             }])
             .expect("GPU のデバイスが失われました");

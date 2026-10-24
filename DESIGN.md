@@ -2560,6 +2560,8 @@ pub struct PlacedLine {
 - 字の色は `GlyphStyle::color`（なければ `TextWrite::color`）。不透明度に `1 − ghost` を掛ける
 - **影の色は、字の色の rgb を 0.25 倍したもの**（不透明度は字と同じ）。gueiz と同じ。影は字と縁取りの形を、`Shadow::offset() × size` だけずらして書く（y は `TextLayout` の座標で下向き）
 - 縁取りの色は `TextFormat::Outline` の色。不透明度に `1 − ghost` を掛ける
+- **注意：`Ghost` と、不透明度が 1 未満の色は、`Blend::Alpha` で描く `Object*` でだけ透ける。**`Opaque` は不透明度を捨てる（§10 描画順）。`write_text` は、`Ghost` のあるテキストを `blend()` で `Opaque` を指定した `Object*` に書いた時に、`Object*` ごとに一度だけ `log` で警告する（`blend()` を呼んでいない場合は分からないため警告しない。§13 3D の影・縁取りと同じ）
+- **注意：影の色は字より暗いため、暗い背景の上ではほとんど見えない。**また `Shadow` の既定の距離（0.06 em）は、24px の字で 1.4px ほど。目立たせたい場合は距離を大きくする
 - `Italic`（合成）は、フォントの座標の y（ベースラインからの高さ）に比例して x をずらす。影・縁取りも同じく傾ける
 - `HideBox` は、字・影・縁取りの代わりに、送り幅 × `TextRow::height` の四角形（行の上端から）を字の色で書く
 - `Obfuscated` は、候補の字（gueiz の `OBFUSCATION_POOL`、英数字と記号）のうち、そのグリフのフォントにある字から、`(obfuscation_seed, TextLayout の中のグリフの番号)` の hash で選ぶ。フォントに候補がなければ元の字を書く

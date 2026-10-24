@@ -3,7 +3,7 @@
 use super::vector::{ShapeKey, signed_area, size_stage, tessellate_glyph};
 use super::*;
 use crate::color::Color;
-use crate::config::LonasConfig;
+use crate::config::{Blend, CullMode, LonasConfig};
 use crate::config::tests::sample_config;
 use crate::draw::{Camera2D, DrawManager2D, HeapRequest};
 use crate::gpu::{GpuContext, SurfaceDraw, SurfaceId};
@@ -394,4 +394,48 @@ fn text_shader_draws_glyphs_and_boxes_with_back_face_culling() {
 
     // 字のない場所は背景のまま
     assert_eq!(at(SIZE as f32 - 1.0, SIZE as f32 - 1.0)[..3], [0, 0, 0]);
+}
+
+#[test]
+fn shadow_is_drawn_behind_and_ghost_needs_alpha_blending() {
+    const SIZE: u32 = 64;
+    let config = sample_config();
+    let bindings = config.bindings;
+    let Ok(mut gpu) = GpuContext::new_headless(config) else {
+        eprintln!("GPU を使うテストを飛ばします");
+        return;
+    };
+    let surface = gpu.add_offscreen(SIZE, SIZE);
+    let (mut resources, latin, japanese) = resources_with(ResourceConfig::for_tests());
+    let shader = resources.register_shader(&text_shader(&bindings, GlyphMethod::Vector, Dimension::D2)).unwrap();
+    let style = TextStyle { size: 40.0, ..style(latin, japanese) };
+    let mut draw = |text: &str, blend: Blend| {
+        let layout = resources.layout_text(&style, &Formatted::parse(text).unwrap());
+        let mut manager = manager(&mut gpu);
+        let mut object = text_object(&gpu);
+        object.shader(shader).cull_mode(CullMode::None).blend(blend);
+
+        gpu.begin_frame();
+        object.begin();
+        write_text(&mut object, &mut resources, &layout, &TextWrite { position: Vector3f::ZERO, ..text_write(YAxis::Down) });
+        object.end(&mut manager);
+        gpu.end_frame(&mut resources, &mut [SurfaceDraw { surface, clear_color: Some(Color::BLACK), draw_managers: &mut [&mut manager] }])
+            .unwrap();
+        let pixels = gpu.read_pixels(surface);
+        // ベースラインの少し上の 1 行の赤の値
+        let y = (layout.rows()[0].baseline - 10.0) as u32;
+        (0..SIZE).map(|x| pixels[(y * SIZE + x) as usize][0]).collect::<Vec<u8>>()
+    };
+
+    // 影：字（255）の右に、字の色の rgb を 0.25 倍した影（sRGB で 64 前後）が出る
+    let shadowed = draw("§[shadow 0.3 0]l", Blend::Opaque);
+    assert!(shadowed.contains(&255));
+    let glyph_end = shadowed.iter().rposition(|&value| value == 255).unwrap();
+    assert!(shadowed[glyph_end + 1..].iter().any(|&value| (60..=68).contains(&value)), "{shadowed:?}");
+
+    // Ghost：Blend::Alpha なら透け、Opaque では不透明度が捨てられて透けない（§13 書き込みの細部）
+    let alpha = draw("§[ghost 0.5]§[hidebox]A", Blend::Alpha);
+    assert!((180..=195).contains(&alpha[2]), "{alpha:?}");
+    let opaque = draw("§[ghost 0.5]§[hidebox]A", Blend::Opaque);
+    assert_eq!(opaque[2], 255);
 }
