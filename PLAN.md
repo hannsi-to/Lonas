@@ -279,14 +279,14 @@ src/
 
 **目的**：グリフ専用のアトラスを作り、`GlyphMethod::Bitmap` で描く（§13 グリフのアトラス）。
 
-- [ ] `GlyphAtlasConfig`（`LonasConfig::glyph_atlas`）と値の検査
-- [ ] `R8Unorm` / `Rgba8Unorm` の `texture_2d_array`、線形補間のサンプラー、`glyph_rects` の表、番号 0 の塗りつぶしの領域
-- [ ] `BindingConfig` に `glyph_atlas_r8`・`glyph_atlas_rgba`・`glyph_sampler`・`glyph_rects` を足す。`glyph_rects` の型の大きさの検査
-- [ ] 棚方式の詰め込み（段階 7 の `texture/packer.rs` を使う）・余白・レイヤーの追加
-- [ ] 追い出し：最後に使ったフレームの記録と、満杯の時に古い順に捨てる。そのフレームに使うグリフだけで溢れたら panic（§13 満杯の時）
-- [ ] zeno でのラスタライズ（nonzero）、`Hinting::Light`（skrifa の自動ヒンティングを縦方向だけ）、合成の太字・縁取り
-- [ ] `write_text` の `Bitmap`：四角形・`uv` の 0〜1・`normal.x` の番号、字の左上を画素の格子に揃える。`PositionColorUvNormal` 以外の `VertexLayout` の扱い
-- [ ] `lonas::wgsl::GLYPH`（`lonas_glyph_bitmap`）と `text_shader` の `Bitmap` 用
+- [x] `GlyphAtlasConfig`（`LonasConfig::glyph_atlas`）と値の検査
+- [x] `R8Unorm` / `Rgba8Unorm` の `texture_2d_array`、線形補間のサンプラー、`glyph_rects` の表、番号 0 の塗りつぶしの領域
+- [x] `BindingConfig` に `glyph_atlas_r8`・`glyph_atlas_rgba`・`glyph_sampler`・`glyph_rects` を足す。`glyph_rects` の型の大きさの検査
+- [x] 棚方式の詰め込み（段階 7 の `texture/packer.rs` を使う）・余白・レイヤーの追加
+- [x] 追い出し：最後に使ったフレームの記録と、満杯の時に古い順に捨てる。そのフレームに使うグリフだけで溢れたら panic（§13 満杯の時）
+- [x] zeno でのラスタライズ（nonzero）、`Hinting::Light`（skrifa の自動ヒンティングを縦方向だけ）、合成の太字・縁取り
+- [x] `write_text` の `Bitmap`：四角形・`uv` の 0〜1・`normal.x` の番号、字の左上を画素の格子に揃える。`PositionColorUvNormal` 以外の `VertexLayout` の扱い
+- [x] `lonas::wgsl::GLYPH`（`lonas_glyph_bitmap`）と `text_shader` の `Bitmap` 用
 
 **終わりの条件**
 - 乱数でグリフの登録と追い出しを繰り返し、配置が重ならず余白が保たれるテスト

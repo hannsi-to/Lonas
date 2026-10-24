@@ -1773,6 +1773,10 @@ pub struct BindingConfig {
     pub atlas_texture: BindingSlot,      // §11 TextureAtlas
     pub atlas_sampler: BindingSlot,
     pub texture_rects: BindingSlot,      // テクスチャの番号 → アトラス上の範囲の表（§11 TextureAtlas）
+    pub glyph_atlas_r8: BindingSlot,     // グリフのアトラス（§13 グリフのアトラス）。Bitmap / Sdf
+    pub glyph_atlas_rgba: BindingSlot,   // Msdf
+    pub glyph_sampler: BindingSlot,      // 線形補間
+    pub glyph_rects: BindingSlot,        // グリフの番号 → アトラス上の範囲の表
     pub uniform: BindingSlot,            // var<storage, read> の配列（§11 uniform）
     pub previous_camera: BindingSlot,    // TAA（§11 アンチエイリアス）。前のフレームの Camera
     pub previous_instances: BindingSlot, // TAA
@@ -2724,6 +2728,37 @@ normal.z = 0
 - `end_frame` で置き場所が足りない時は、そのフレームに使わなかったグリフを古い順に追い出し、棚の空きを再利用する
 - そのフレームに使うグリフだけで溢れた場合は panic（テクスチャの容量超過と同じ扱い、§11 容量を超えた場合）
 - 却下案：テクスチャと同じく `max_layers` を超えたら panic。長く動かすと使った字が増え続け、いつか止まる
+
+#### グリフの番号と、追い出した後（段階 11 で決めたこと）
+
+**決定：グリフの番号は、`ResourceManager` がグリフの画素を作った時に発行する。追い出しても番号と画素を持ち続け、次に使った時に同じ番号のまま置き直す。**
+
+- 頂点の `normal.x` に書いた番号が変わらないため、置き直しても頂点を書き直さない（上記の「頂点からの参照」）
+- グリフの画素（覆い率、1 画素 1 バイト）は、GPU に送った後も `ResourceManager` に残す。置き直す時に作り直さず、`max_new_glyphs_per_frame` の数にも入れない
+- 番号と画素を捨てるのは、そのフォントの `unregister_font` の時だけ。番号は 1 から発行し、捨てた番号は再利用する
+- 1 つのグリフの画素は小さい（24px の字で 1 KB 未満）ため、CPU のメモリは使った字の数に比例して増えるだけで済む
+- 却下案：追い出した時に番号と画素を捨てる。次に使う時に別の番号になり、頂点を書き直すことになる
+- 却下案：追い出した時に画素だけ捨て、次に使う時に作り直す。その字を作る負担が、上限（`max_new_glyphs_per_frame`）で後回しになり、一度描いた字が一瞬消える
+
+**決定：GPU への転送と追い出しは `end_frame` の「2. リソースの反映」で行う。**
+
+- `ResourceManager` は、そのフレームに新しく作ったグリフと、追い出されていたのに使ったグリフの番号を溜める。`GpuContext` はそれを取り出して置き、置き場所がなければ追い出す（追い出したことを `ResourceManager` に知らせる）
+- 追い出す候補は、そのフレームに使わなかった（最後に使ったフレームが今のフレームより前の）グリフ。最後に使ったフレームが古い順に、置けるまで追い出す
+- グリフの番号の表（`glyph_rects`）の要素は `TextureRect` と同じ 32 バイト（`rect: vec4<f32>`・`layer: u32`・予約 3 つ）。予約は段階 12（Sdf / Msdf）で使う
+- 余白は 0（覆い率 0・内側から遠い）で埋める。番号 0 の塗りつぶしの領域だけは、余白も 1 で埋める（どこを読んでも 1 になる）
+- **注意：棚方式のため、追い出しても置けないことがある。**追い出したグリフの場所は、その棚の高さ・空いた幅に収まるグリフにしか使えない（§11 詰め込み方）。そのフレームに使わないグリフをすべて追い出しても置けなければ panic する。大きさの違う字を多く使う場合は、`glyph_atlas` の `size` か `max_layers` に余裕を持たせる
+
+**決定：`LonasConfig::glyph_atlas` とグリフの 4 つのバインディングは、`text` feature によらず持つ。**設定の形を feature で変えないため。`text` を外した場合も小さなアトラスは作られる
+
+#### Bitmap の書き込み（段階 11 で決めたこと）
+
+- 画素の大きさは `size × pixel_scale` を整数に丸めた値（1 以上）
+- 四角形は、グリフの原点（ベースライン上）を書き込む座標で `1 / pixel_scale` の格子に丸め、そこから画素の位置（zeno の配置）だけずらす。2D で `Camera2D` の位置が整数・`zoom` が 1 なら、画素の格子にそろう
+- `uv` は四角形の左上が (0, 0)、右下が (1, 1)。グリフの画素の行の順（上から下）と同じ
+- `Italic`（合成）は四角形の頂点を、ベースラインからの高さに比例してずらす。`Shadow` は四角形をずらす
+- `HideBox`・下線などの線は、ベクターと同じ形を、番号 0（塗りつぶしの領域）を指す頂点で書く
+- 覆い率を不透明度に掛けるため、`Bitmap` のテキストは `Blend::Alpha` で描く（`Opaque` では字の四角形がそのまま塗られる）
+- `lonas::wgsl::GLYPH` の関数は、アトラス・サンプラー・`GlyphRect`・`uv` を引数で受け取る（`fn lonas_glyph_bitmap(atlas: texture_2d_array<f32>, atlas_sampler: sampler, rect: GlyphRect, uv: vec2<f32>) -> f32`）。WGSL ではストレージの配列を関数に渡しにくいため、表の要素を渡す
 
 #### シェーダー
 

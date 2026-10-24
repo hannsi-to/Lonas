@@ -3,7 +3,7 @@
 
 use lonas::lonas::{
     AntiAliasing, Backend, BindingConfig, BindingSlot, Blend, Camera2D, Camera3D, Color, CoordinateSystemConfig, CullMode,
-    DrawManager2D, DrawManager3D, FilterMode, GpuContext, Handedness, Instance2D, Instance3D, InstanceId,
+    DrawManager2D, DrawManager3D, FilterMode, GlyphAtlasConfig, GpuContext, Handedness, Instance2D, Instance3D, InstanceId,
     LonasConfig, LonasError, Matrix4f, MemoryCapacity, MemoryConfig, MemoryUpdateType, MotionVectorFormat, Object2D,
     Object3D, Origin2D, PresentMode, ProjectionMode, Quaternion, ResourceConfig, ResourceManager, ShaderId, SurfaceDraw,
     SurfaceId, TaaConfig, TextConfig, TextureAtlasConfig, TextureId, PaintType, Vector2f, Vector3f, Vertex, VertexLayout, Visibility,
@@ -254,6 +254,10 @@ impl TestApplication {
                 uniform: BindingSlot { group: 2, binding: 0 },
                 previous_camera: BindingSlot { group: 3, binding: 0 },
                 previous_instances: BindingSlot { group: 3, binding: 1 },
+                glyph_atlas_r8: BindingSlot { group: 1, binding: 3 },
+                glyph_atlas_rgba: BindingSlot { group: 1, binding: 4 },
+                glyph_sampler: BindingSlot { group: 1, binding: 5 },
+                glyph_rects: BindingSlot { group: 1, binding: 6 },
             },
             coordinate_system: CoordinateSystemConfig {
                 origin_2d: Origin2D::TopLeft,
@@ -277,6 +281,12 @@ impl TestApplication {
                 padding: 2,
                 mip_level_count: 4,
                 filter: FilterMode::Linear,
+            },
+            glyph_atlas: GlyphAtlasConfig {
+                size: 1024,
+                initial_layers: 1,
+                max_layers: 4,
+                padding: 1,
             },
         };
 

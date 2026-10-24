@@ -3,7 +3,7 @@
 pub use crate::color::Color;
 pub use crate::config::{
     AntiAliasing, Backend, BindingConfig, BindingSlot, Blend, CoordinateSystemConfig, CullMode, FilterMode, Handedness,
-    LonasConfig, MemoryCapacity, MemoryConfig, MotionVectorFormat, Origin2D, PresentMode, TaaConfig, TextureAtlasConfig,
+    LonasConfig, MemoryCapacity, MemoryConfig, MotionVectorFormat, Origin2D, PresentMode, GlyphAtlasConfig, TaaConfig, TextureAtlasConfig,
 };
 pub use crate::draw::{Camera2D, Camera3D, CameraId, DrawManager2D, DrawManager3D, ProjectionMode};
 pub use crate::error::LonasError;
@@ -17,7 +17,7 @@ pub use crate::resource::{ResourceConfig, ResourceManager, ShaderId, TextureId};
 pub use crate::resource::FontId;
 #[cfg(feature = "text")]
 pub use crate::text::{
-    FontFamily, Formatted, GlyphMethod, GlyphStyle, LineDecoration, LineHeight, LineKind, NamedColor, PlacedGlyph,
+    FontFamily, Formatted, GlyphMethod, Hinting, GlyphStyle, LineDecoration, LineHeight, LineKind, NamedColor, PlacedGlyph,
     PlacedLine, ResetTarget, Shadow, TextAlign, TextConfig, TextFormat, TextFormatError, TextLayout, TextObject, TextRow,
     TextStyle, TextWrite, YAxis, write_text,
 };

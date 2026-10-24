@@ -313,7 +313,8 @@ impl GpuContext {
 
             // 2. リソースの反映
             self.renderer.apply_resource_changes(&self.device, &self.queue, resource_manager);
-            // このフレームの write_text は終わっている。グリフのキャッシュの追い出しとフレームの区切り（§13）
+            // このフレームの write_text は終わっている（グリフのアトラスへの配置は apply_resource_changes で済んでいる）
+            // ベクターのキャッシュの追い出しとフレームの区切り（§13）
             #[cfg(feature = "text")]
             resource_manager.finish_text_frame();
 
@@ -594,6 +595,8 @@ fn check_limits(config: &LonasConfig, limits: &wgpu::Limits) -> Result<(), Lonas
     let checks = [
         ("texture_atlas.size（max_texture_dimension_2d）", config.texture_atlas.size as u64, limits.max_texture_dimension_2d as u64),
         ("texture_atlas.max_layers（max_texture_array_layers）", config.texture_atlas.max_layers as u64, limits.max_texture_array_layers as u64),
+        ("glyph_atlas.size（max_texture_dimension_2d）", config.glyph_atlas.size as u64, limits.max_texture_dimension_2d as u64),
+        ("glyph_atlas.max_layers（max_texture_array_layers）", config.glyph_atlas.max_layers as u64, limits.max_texture_array_layers as u64),
         // group は 0 から数えるため、使う数は最大の番号 + 1
         ("BindingConfig の group（max_bind_groups）", config.bindings.max_group() as u64 + 1, limits.max_bind_groups as u64),
     ];

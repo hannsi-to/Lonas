@@ -47,6 +47,27 @@ pub(crate) const INSTANCE_3D_SIZE: u32 = 96;
 pub(crate) const CAMERA_SIZE: u32 = 224;
 #[allow(dead_code)] // 段階 7（texture_rects）で使う
 pub(crate) const TEXTURE_RECT_SIZE: u32 = 32;
+pub(crate) const GLYPH_RECT_SIZE: u32 = 32;
+
+// グリフのアトラスを読む関数（§13 シェーダー）。STRUCTS と同じく、自分の WGSL の先頭につなげる
+// アトラス・サンプラー・表の要素を引数で受け取る（WGSL ではストレージの配列を関数に渡しにくいため）
+//
+// let rect = glyph_rects[slot];
+// let coverage = lonas_glyph_bitmap(glyph_atlas_r8, glyph_sampler, rect, in.uv);
+pub const GLYPH: &str = r#"
+struct GlyphRect {
+    rect: vec4<f32>,
+    layer: u32,
+    _reserved0: u32,
+    _reserved1: u32,
+    _reserved2: u32,
+}
+
+// Bitmap：覆い率（0〜1）
+fn lonas_glyph_bitmap(atlas: texture_2d_array<f32>, atlas_sampler: sampler, rect: GlyphRect, uv: vec2<f32>) -> f32 {
+    return textureSample(atlas, atlas_sampler, rect.rect.xy + uv * rect.rect.zw, rect.layer).r;
+}
+"#;
 
 // text_shader が作るシェーダーの次元（§13 シェーダー）
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -74,17 +95,19 @@ pub fn text_shader(bindings: &crate::config::BindingConfig, method: crate::text:
         ),
         Dimension::D3 => ("Instance3D", "let world = inst.transform * vec4(position, 1.0);"),
     };
-    let fragment = match method {
-        GlyphMethod::Vector => "return in.color;",
-    };
     let (camera, instances, order) = (bindings.camera, bindings.instances, bindings.instance_order);
-
-    format!(
+    let common = format!(
         "{STRUCTS}
 @group({}) @binding({}) var<uniform> camera: Camera;
 @group({}) @binding({}) var<storage, read> instances: array<{instance}>;
 @group({}) @binding({}) var<storage, read> instance_order: array<u32>;
+",
+        camera.group, camera.binding, instances.group, instances.binding, order.group, order.binding,
+    );
 
+    match method {
+        GlyphMethod::Vector => format!(
+            "{common}
 struct LonasTextOut {{ @builtin(position) clip: vec4<f32>, @location(0) color: vec4<f32> }}
 
 @vertex
@@ -95,8 +118,47 @@ fn vs(@location(0) position: vec3<f32>, @location(1) color: vec4<f32>, @builtin(
 }}
 
 @fragment
-fn fs(in: LonasTextOut) -> @location(0) vec4<f32> {{ {fragment} }}
+fn fs(in: LonasTextOut) -> @location(0) vec4<f32> {{ return in.color; }}
+"
+        ),
+        // 頂点の色 × 覆い率。VertexLayout::PositionColorUvNormal で描く（normal.x がグリフの番号）
+        GlyphMethod::Bitmap { .. } => {
+            let (atlas, sampler, rects) = (bindings.glyph_atlas_r8, bindings.glyph_sampler, bindings.glyph_rects);
+
+            format!(
+                "{common}{GLYPH}
+@group({}) @binding({}) var glyph_atlas_r8: texture_2d_array<f32>;
+@group({}) @binding({}) var glyph_sampler: sampler;
+@group({}) @binding({}) var<storage, read> glyph_rects: array<GlyphRect>;
+
+struct LonasTextOut {{
+    @builtin(position) clip: vec4<f32>,
+    @location(0) color: vec4<f32>,
+    @location(1) uv: vec2<f32>,
+    @location(2) @interpolate(flat) slot: u32,
+}}
+
+@vertex
+fn vs(
+    @location(0) position: vec3<f32>,
+    @location(1) color: vec4<f32>,
+    @location(2) uv: vec2<f32>,
+    @location(3) normal: vec3<f32>,
+    @builtin(instance_index) index: u32,
+) -> LonasTextOut {{
+    let inst = instances[instance_order[index]];
+    {world}
+    return LonasTextOut(camera.view_projection * world, color * inst.color, uv, u32(normal.x + 0.5));
+}}
+
+@fragment
+fn fs(in: LonasTextOut) -> @location(0) vec4<f32> {{
+    let coverage = lonas_glyph_bitmap(glyph_atlas_r8, glyph_sampler, glyph_rects[in.slot], in.uv);
+    return vec4(in.color.rgb, in.color.a * coverage);
+}}
 ",
-        camera.group, camera.binding, instances.group, instances.binding, order.group, order.binding,
-    )
+                atlas.group, atlas.binding, sampler.group, sampler.binding, rects.group, rects.binding,
+            )
+        }
+    }
 }
