@@ -32,6 +32,7 @@ src/
   texture/          TextureAtlas（棚方式・余白・ミップマップ）（§11 TextureAtlas）
   aa/               MSAA・FXAA・TAA（§11 アンチエイリアス）
   wgsl.rs           STRUCTS と Lonas 内部のシェーダー（§11 シェーダーとの約束事）
+  text/             フォント・書式・整形・グリフのキャッシュ・write_text（§13。`text` feature）
 ```
 
 ### 追加する依存
@@ -46,6 +47,10 @@ src/
 | 4 | `pollster` | `GpuContext::new` の中で非同期処理を待つ（§11 エラーの方針） |
 | 4 | `raw-window-handle` | ウィンドウの受け取り（§8） |
 | 6 | `winit`（dev-dependencies のみ） | 画面で確かめる example |
+| 9 | `harfrust`・`skrifa`・`unicode-linebreak`（`text` feature） | 整形・輪郭・折り返し（§13） |
+| 10 | `lyon_tessellation`（`text` feature） | グリフの三角形化（§13 ベクター） |
+| 11 | `zeno`（`text` feature） | グリフのラスタライズ（§13 グリフの作り方） |
+| 12 | msdfgen（`msdf` feature。クレートは段階 12 の最初に決める） | SDF / MSDF（§13） |
 
 ---
 
@@ -220,6 +225,91 @@ src/
 - 各方式で同じ場面を描き、斜めの辺がなめらかになることを画像で確かめる example
 - 方式を実行中に切り替えても、エラーや表示の崩れが起きないこと
 - TAA で、カメラを動かしたときの残像が `TaaConfig` の値で調整できること
+
+---
+
+## 段階 9：フォントの登録と整形
+
+**目的**：GPU を使わずに、文字列から `TextLayout`（グリフの位置と書式）を作るところまでを完成させる（§13 全体の構成の 1・2）。
+
+- [ ] `text` feature を足し、既定で有効にする（§13 Cargo の feature）
+- [ ] `ResourceConfig` / `TextConfig` と値の検査。`ResourceManager::new(ResourceConfig)` に変え、今の呼び出し（example・テスト）を書き換える（§13 CPU 側の設定）
+- [ ] `register_font` / `unregister_font` と `FontId`（発行元・番号・世代、§11 ID と同じ）
+- [ ] `TextFormat` / `Formatted` / `LineDecoration` / `Shadow` / `ResetTarget` を gueiz から移す。色は `Color` にする（§13 書式）
+- [ ] `FontFamily` と書体の選び方（太字・斜体の書体がなければ合成の印を付ける）、クラスターごとのフォールバック（§13 フォントの組とフォールバック）
+- [ ] `layout_text`：区間への分け方（`FontSize` と使う書体が変わる位置・改行）、HarfRust での整形、`SpaceX`、UAX #14 の折り返しとクラスターの境目での切断、行の高さ・`SpaceY`、`TextAlign`（§13 整形・折り返し、位置と揃え）
+- [ ] 書式の積み上げ（`SkipPush` / `SkipPop` / `Reset`）と、下線などの線の位置（同じ線が続く字をまとめる）を `TextLayout` に記録する
+- [ ] `TextLayout::size`
+
+**終わりの条件**
+- テスト用のフォント（OFL などの、リポジトリに置けるライセンスのもの）を `tests` 用の素材として置く
+- gueiz の `Formatted::parse` のテストを移し、通る。`Formatted::plain` が書式を解釈しないテスト
+- 日本語の文が字の間で折り返され、句読点が行頭に来ないテスト。折り返せる場所がない長い語がクラスターの境目で切られるテスト
+- 色だけを変えた位置で区間が分かれず、`FontSize` を変えた位置で分かれるテスト
+- 先頭の `FontFamily` にない字が次の `FontFamily` で配置され、どれにもない字が `.notdef` になるテスト
+- `TextAlign::Center` / `Right` で行ごとの位置がずれるテスト
+
+---
+
+## 段階 10：ベクターの書き込み
+
+**目的**：`write_text` で `GlyphMethod::Vector` の文字を画面に出す（§13 ベクター・整形と書き込みの分け方・書式）。
+
+- [ ] skrifa の輪郭を lyon の `FillTessellator`（`FillRule::NonZero`）で三角形化し、三角形を反時計回りに揃える
+- [ ] 大きさの段階（`size × pixel_scale` を 2 倍ごとに切り上げ）と許容誤差 0.25px、em 単位のキャッシュ
+- [ ] 合成の太字・縁取り（ずらした複製を 1 つのパスにまとめる）と、キャッシュのキー
+- [ ] キャッシュのバイト数の上限と、`end_frame` での古い形の破棄（§13 ベクター：輪郭の三角形化）
+- [ ] `write_text`：`Object2D` / `Object3D` のための crate 内のトレイト、グリフごとの `begin_shape()` と `index()`、`YAxis::Down` での反転とインデックスの順の入れ替え
+- [ ] 書き込みの書式：色・`Ghost`・`Italic`（傾け）・`Shadow`・`Obfuscated`（種で選ぶ）・`HideBox`・下線などの線（`object/stroke.rs` を使う）。影 → 縁取り → 字 の順
+- [ ] `max_new_glyphs_per_frame` と `prepare_glyphs`、`ResourceManager` がフレームの区切りを `end_frame` で知る仕組み（§13 グリフを作る負担を分ける）
+- [ ] 3D の `Opaque` に影・縁取りを書いた時の警告（§13 3D の影・縁取り）
+- [ ] `lonas::wgsl::text_shader` の `Vector` 用（頂点の色をそのまま出す）
+
+**終わりの条件**
+- 作った三角形がすべて xy 平面で反時計回りになるテスト（`YAxis::Up` / `Down` の両方）
+- 重なった輪郭を持つグリフ（合成グリフなど）が、穴の抜けなく三角形化されるテスト
+- 同じ文字列を続けて書いたフレームで、頂点・インデックスの転送が起きないテスト
+- 上限を超えたキャッシュが、そのフレームに使わなかった形から捨てられるテスト
+- `max_new_glyphs_per_frame` を超えた字がそのフレームに描かれず、次のフレーム以降に現れるテスト
+- 書式（色・太字・斜体・下線・影・縁取り）を混ぜた日本語の文を、2D と 3D で描く example
+
+---
+
+## 段階 11：グリフのアトラスと Bitmap
+
+**目的**：グリフ専用のアトラスを作り、`GlyphMethod::Bitmap` で描く（§13 グリフのアトラス）。
+
+- [ ] `GlyphAtlasConfig`（`LonasConfig::glyph_atlas`）と値の検査
+- [ ] `R8Unorm` / `Rgba8Unorm` の `texture_2d_array`、線形補間のサンプラー、`glyph_rects` の表、番号 0 の塗りつぶしの領域
+- [ ] `BindingConfig` に `glyph_atlas_r8`・`glyph_atlas_rgba`・`glyph_sampler`・`glyph_rects` を足す。`glyph_rects` の型の大きさの検査
+- [ ] 棚方式の詰め込み（段階 7 の `texture/packer.rs` を使う）・余白・レイヤーの追加
+- [ ] 追い出し：最後に使ったフレームの記録と、満杯の時に古い順に捨てる。そのフレームに使うグリフだけで溢れたら panic（§13 満杯の時）
+- [ ] zeno でのラスタライズ（nonzero）、`Hinting::Light`（skrifa の自動ヒンティングを縦方向だけ）、合成の太字・縁取り
+- [ ] `write_text` の `Bitmap`：四角形・`uv` の 0〜1・`normal.x` の番号、字の左上を画素の格子に揃える。`PositionColorUvNormal` 以外の `VertexLayout` の扱い
+- [ ] `lonas::wgsl::GLYPH`（`lonas_glyph_bitmap`）と `text_shader` の `Bitmap` 用
+
+**終わりの条件**
+- 乱数でグリフの登録と追い出しを繰り返し、配置が重ならず余白が保たれるテスト
+- 描いた画像を読み戻し、グリフの位置に覆い率のとおりの画素が出るテスト（ウィンドウなしの描画先で）
+- 追い出して置き直したグリフが、頂点を書き直さずに正しく描かれるテスト
+- 小さい UI の文字を `Hinting::None` / `Light` で並べて比べる example
+
+---
+
+## 段階 12：SDF / MSDF
+
+**目的**：`msdf` feature で `GlyphMethod::Sdf` / `Msdf` を描く（§13 グリフの作り方・シェーダー）。
+
+- [ ] **最初に msdfgen を使うクレートを決める**（既存のバインディングか、自前の FFI か）。Windows と Linux の CI でビルドできることを確かめる
+- [ ] `msdf` feature を足し、既定で無効にする。feature なしで `Sdf` / `Msdf` を使った時の panic
+- [ ] `sdf_em_size`・`sdf_range` で SDF（`R8Unorm`）と MTSDF（`Rgba8Unorm`）を作る
+- [ ] 太字・縁取り：`normal.y` で境目をずらす。縁取りは大きくした四角形を字の後ろに書く。`sdf_range` を超えた量の切り詰めと警告
+- [ ] `lonas_glyph_sdf` / `lonas_glyph_msdf`（median・fwidth でのぼかし）と `text_shader` の `Sdf` / `Msdf` 用
+
+**終わりの条件**
+- 同じ文字を大きく拡大しても縁がくっきりしていることを画像で確かめる example（`Bitmap` と並べて比べる）
+- 太字・縁取りを付けた字の境目が、`normal.y` の量だけ外に出ることを、読み戻した画素で確かめるテスト
+- CI で `msdf` feature を有効にしたビルドとテストが通る
 
 ---
 
