@@ -254,6 +254,41 @@ fn index_shape_and_fill_shape_are_both_drawn() {
     assert_color(pixel(&pixels, 32, 32), [0, 0, 0], "正方形の間");
 }
 
+#[test]
+fn stroke_object_draws_index_shape_and_line_shape() {
+    let Some(mut scene) = scene(SHADER_2D) else { return };
+    let mut manager = manager_2d(&mut scene);
+    let mut object = Object2D::new(&scene.gpu);
+    let stroke = PaintType::Stroke { line_width: 2.0, joint_type: JointType::Miter, strip: false, dash: None };
+    object.memory_update_type(MemoryUpdateType::Static).paint_type(stroke).shader(scene.shader).cull_mode(CullMode::None);
+    object.add_instance(Instance2D::default());
+
+    // 1 つ目の正方形は index() で塗り、2 つ目は index() を呼ばずに線で描く（examples/test_points.rs と同じ形）
+    scene.gpu.begin_frame();
+    object.begin();
+    for (x, y) in [(8.0, 24.0), (24.0, 24.0), (24.0, 40.0), (8.0, 40.0)] {
+        object.vertex(Vertex::new_position_color(x, y, 0.0, 1.0, 1.0, 1.0, 1.0));
+    }
+    object.index(0).index(1).index(2).index(2).index(3).index(0);
+    object.begin_shape();
+    for (x, y) in [(36.0, 20.0), (56.0, 20.0), (56.0, 44.0), (36.0, 44.0)] {
+        object.vertex(Vertex::new_position_color(x, y, 0.0, 1.0, 1.0, 1.0, 1.0));
+    }
+    object.end(&mut manager);
+    scene.gpu.end_frame(&mut scene.resources, &mut [SurfaceDraw {
+        surface: scene.surface,
+        clear_color: Some(Color::BLACK),
+        draw_managers: &mut [&mut manager],
+    }])
+    .unwrap();
+    let pixels = scene.gpu.read_pixels(scene.surface);
+
+    assert_color(pixel(&pixels, 16, 32), [255, 255, 255], "index() で塗った正方形");
+    assert_color(pixel(&pixels, 36, 32), [255, 255, 255], "線の正方形の左の辺");
+    assert_color(pixel(&pixels, 46, 20), [255, 255, 255], "線の正方形の上の辺");
+    assert_color(pixel(&pixels, 46, 32), [0, 0, 0], "線の正方形の中");
+}
+
 // ---- 穴のある多角形（§10）----
 
 // 16〜48 の白い正方形に、28〜36 の正方形の穴を空けて描く。cull_mode は既定（Back）
