@@ -103,31 +103,32 @@ impl State {
         self.point_2d.vertex(Vertex::new_position_color(100.0,100.0,0.0, 1.0, 1.0, 1.0, 1.0));
         self.point_2d.vertex(Vertex::new_position_color(0.0,100.0,0.0, 1.0, 1.0, 1.0, 1.0));
 
-        self.point_2d.index(0);
-        self.point_2d.index(1);
-        self.point_2d.index(2);
-        self.point_2d.index(2);
-        self.point_2d.index(3);
-        self.point_2d.index(0);
-
-        self.point_2d.begin_shape();
+        // self.point_2d.index(0);
+        // self.point_2d.index(1);
+        // self.point_2d.index(2);
+        // self.point_2d.index(2);
+        // self.point_2d.index(3);
+        // self.point_2d.index(0);
+        //
+        // self.point_2d.begin_shape();
+        //
+        // self.point_2d.vertex(Vertex::new_position_color(200.0,200.0,0.0, 1.0, 1.0, 1.0, 1.0));
+        // self.point_2d.vertex(Vertex::new_position_color(300.0,200.0,0.0, 1.0, 1.0, 1.0, 1.0));
+        // self.point_2d.vertex(Vertex::new_position_color(300.0,300.0,0.0, 1.0, 1.0, 1.0, 1.0));
+        // self.point_2d.vertex(Vertex::new_position_color(200.0,300.0,0.0, 1.0, 1.0, 1.0, 1.0));
 
         let base_vertex = self.point_2d.get_written_vertex_count() as u32;
-        self.point_2d.vertex(Vertex::new_position_color(200.0,200.0,0.0, 1.0, 1.0, 1.0, 1.0));
-        self.point_2d.vertex(Vertex::new_position_color(300.0,200.0,0.0, 1.0, 1.0, 1.0, 1.0));
-        self.point_2d.vertex(Vertex::new_position_color(300.0,300.0,0.0, 1.0, 1.0, 1.0, 1.0));
-        self.point_2d.vertex(Vertex::new_position_color(200.0,300.0,0.0, 1.0, 1.0, 1.0, 1.0));
 
-        // self.point_2d.index(base_vertex + 0);
-        // self.point_2d.index(base_vertex + 1);
-        // self.point_2d.index(base_vertex + 2);
-        // self.point_2d.index(base_vertex + 2);
-        // self.point_2d.index(base_vertex + 3);
-        // self.point_2d.index(base_vertex + 0);
+        self.point_2d.index(base_vertex + 0);
+        self.point_2d.index(base_vertex + 1);
+        self.point_2d.index(base_vertex + 2);
+        self.point_2d.index(base_vertex + 2);
+        self.point_2d.index(base_vertex + 3);
+        self.point_2d.index(base_vertex + 0);
 
-        self.point_2d.begin_shape();
+        // self.point_2d.begin_shape();
 
-        build_point(&mut self.point_2d, PointType::Rect { width: 10.0, height: 10.0 }, Vertex::new_position_color(500.0, 500.0, 0.0, 1.0, 1.0, 1.0, 1.0));
+        // build_point(&mut self.point_2d, PointType::Rect { width: 10.0, height: 10.0 }, Vertex::new_position_color(500.0, 500.0, 0.0, 1.0, 1.0, 1.0, 1.0));
         // build_point_vertex(&mut self.point_2d, PointType::Circle { radius: 20.0 }, Vertex::new_position_color(500.0, 500.0, 0.0, 1.0, 1.0, 1.0, 1.0));
 
         self.point_2d.end(&mut self.manager_2d);

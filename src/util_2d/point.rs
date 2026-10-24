@@ -1,6 +1,3 @@
-use std::marker::PhantomData;
-use image::imageops::interpolate_bilinear;
-use log::error;
 use std::f32::consts::TAU;
 use crate::lonas::{Object2D, PaintType};
 use crate::util_2d::check_object_type;

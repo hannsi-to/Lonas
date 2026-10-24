@@ -82,9 +82,29 @@ impl Vertex {
             0.0,
         )
     }
+
+    pub fn translate_mut(&mut self, x: f32, y: f32, z: f32) -> &mut Self {
+        self.x += x;
+        self.y += y;
+        self.z += z;
+        self
+    }
     
+    pub fn set_position_mut(&mut self, x: f32, y: f32, z: f32) -> &mut Self {
+        self.x = x;
+        self.y = y;
+        self.z = z;
+        self
+    }
+    
+    #[must_use]
     pub fn translate(self, x: f32, y: f32, z: f32) -> Self {
         Self { x: self.x + x, y: self.y + y, z: self.z + z, ..self }
+    }
+
+    #[must_use]
+    pub fn set_position(self, x: f32, y: f32, z: f32) -> Self {
+        Self { x, y, z, ..self }
     }
 }
 

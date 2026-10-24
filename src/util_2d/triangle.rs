@@ -1,7 +1,6 @@
 use std::f32::consts::PI;
 use crate::lonas::{Object2D, PaintType};
 use crate::util_2d::check_object_type;
-use crate::util_2d::point::PointType;
 use crate::vertex::Vertex;
 
 pub fn build_equilateral_triangle_radius (
@@ -87,12 +86,12 @@ pub fn build_triangle_3p(
         return;
     };
 
+    let base_vertex = object2d.get_written_vertex_count() as u32;
     object2d.vertex(p1);
     object2d.vertex(p2);
     object2d.vertex(p3);
     match paint_type {
         PaintType::Fill => {
-            let base_vertex = object2d.get_written_vertex_count() as u32;
             object2d.index(base_vertex + 0);
             object2d.index(base_vertex + 1);
             object2d.index(base_vertex + 2);

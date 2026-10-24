@@ -8,7 +8,11 @@ use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
+use lonas::util_2d::{Corner, CornerType};
+use lonas::util_2d::circle::build_circle_other_colors;
 use lonas::util_2d::point::{build_point, PointType};
+use lonas::util_2d::rect::{build_rect_2p, build_rect_2p_wh, build_rect_4p, build_rect_4p_wh};
+use lonas::util_2d::rect_rounded::{build_rect_rounded_2p, build_rect_rounded_2p_wh, build_rect_rounded_4p};
 use lonas::util_2d::triangle::{build_equilateral_triangle_radius, build_equilateral_triangle_side, build_isosceles_triangle, build_scalene_triangle, build_triangle_3p};
 use lonas::vertex::Vertex;
 
@@ -71,13 +75,13 @@ impl State {
         let mut object_2d = Object2D::new(&gpu);
         object_2d
             .memory_update_type(MemoryUpdateType::Static)
-            .paint_type(PaintType::Stroke {
-                line_width: 1.0,
-                joint_type: JointType::Miter,
-                strip: false,
-                dash: None,
-            })
-            // .paint_type(PaintType::Fill)
+            // .paint_type(PaintType::Stroke {
+            //     line_width: 1.0,
+            //     joint_type: JointType::Miter,
+            //     strip: false,
+            //     dash: None,
+            // })
+            .paint_type(PaintType::Fill)
             .shader(shader_2d)
             .cull_mode(CullMode::None)
             .add_instance(Instance2D::default());
@@ -128,6 +132,57 @@ impl State {
         //     Vertex::new_position_color(300.0, 300.0, 0.0, 1.0, 1.0, 1.0, 1.0),
         //     200.0
         // );
+
+        // build_rect_4p(
+        //     &mut self.object_2d,
+        //     Vertex::new_position_color(100.0, 100.0, 0.0, 1.0, 1.0, 1.0, 1.0),
+        //     Vertex::new_position_color(300.0, 100.0, 0.0, 1.0, 1.0, 1.0, 1.0),
+        //     Vertex::new_position_color(300.0, 300.0, 0.0, 1.0, 1.0, 1.0, 1.0),
+        //     Vertex::new_position_color(100.0, 300.0, 0.0, 1.0, 1.0, 1.0, 1.0),
+        // );
+        // build_rect_4p_wh (
+        //     &mut self.object_2d,
+        //     Vertex::new_position_color(100.0, 100.0, 0.0, 1.0, 1.0, 1.0, 1.0),
+        //     Vertex::new_position_color(300.0, 100.0, 0.0, 1.0, 1.0, 1.0, 1.0),
+        //     Vertex::new_position_color(300.0, 300.0, 0.0, 1.0, 1.0, 1.0, 1.0),
+        //     Vertex::new_position_color(100.0, 300.0, 0.0, 1.0, 1.0, 1.0, 1.0),
+        // );
+        // build_rect_2p(
+        //     &mut self.object_2d,
+        //     Vertex::new_position_color(100.0, 100.0, 0.0, 1.0, 1.0, 1.0, 1.0),
+        //     Vertex::new_position_color(300.0, 300.0, 0.0, 1.0, 1.0, 1.0, 1.0),
+        // );
+        // build_rect_2p_wh(
+        //     &mut self.object_2d,
+        //     Vertex::new_position_color(100.0, 100.0, 0.0, 1.0, 1.0, 1.0, 1.0),
+        //     Vertex::new_position_color(300.0, 300.0, 0.0, 1.0, 1.0, 1.0, 1.0),
+        // );
+
+        // build_rect_rounded_4p(
+        //     &mut self.object_2d,
+        //     Corner::new(CornerType::Concave { radius_x: 20.0, radius_y: 30.0 }, Vertex::new_position_color(100.0, 100.0, 0.0, 1.0, 1.0, 1.0, 1.0)),
+        //     Corner::new(CornerType::Circle { radius: 20.0 }, Vertex::new_position_color(300.0, 100.0, 0.0, 1.0, 1.0, 1.0, 1.0)),
+        //     Corner::new(CornerType::Circle { radius: 20.0 }, Vertex::new_position_color(300.0, 300.0, 0.0, 1.0, 1.0, 1.0, 1.0)),
+        //     Corner::new(CornerType::Circle { radius: 20.0 }, Vertex::new_position_color(100.0, 300.0, 0.0, 1.0, 1.0, 1.0, 1.0)),
+        // );
+        // build_rect_rounded_4p (
+        //     &mut self.object_2d,
+        //     Corner::new(CornerType::Circle { radius: 10.0 }, Vertex::new_position_color(100.0, 100.0, 0.0, 1.0, 1.0, 1.0, 1.0)),
+        //     Corner::new(CornerType::Circle { radius: 10.0 }, Vertex::new_position_color(300.0, 100.0, 0.0, 1.0, 1.0, 1.0, 1.0)),
+        //     Corner::new(CornerType::Circle { radius: 10.0 }, Vertex::new_position_color(300.0, 300.0, 0.0, 1.0, 1.0, 1.0, 1.0)),
+        //     Corner::new(CornerType::Circle { radius: 10.0 }, Vertex::new_position_color(100.0, 300.0, 0.0, 1.0, 1.0, 1.0, 1.0)),
+        // );
+        // build_rect_rounded_2p(
+        //     &mut self.object_2d,
+        //     Corner::new(CornerType::Circle { radius: 10.0 }, Vertex::new_position_color(100.0, 100.0, 0.0, 1.0, 1.0, 1.0, 1.0)),
+        //     Corner::new(CornerType::Circle { radius: 10.0 }, Vertex::new_position_color(300.0, 300.0, 0.0, 1.0, 1.0, 1.0, 1.0)),
+        // );
+        // build_rect_rounded_2p_wh(
+        //     &mut self.object_2d,
+        //     Corner::new(CornerType::Circle { radius: 10.0 }, Vertex::new_position_color(100.0, 100.0, 0.0, 1.0, 1.0, 1.0, 1.0)),
+        //     Corner::new(CornerType::Circle { radius: 10.0 }, Vertex::new_position_color(300.0, 300.0, 0.0, 1.0, 1.0, 1.0, 1.0)),
+        // );
+
 
         self.object_2d.end(&mut self.manager_2d);
 
