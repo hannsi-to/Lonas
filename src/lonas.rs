@@ -17,8 +17,9 @@ pub use crate::resource::{ResourceConfig, ResourceManager, ShaderId, TextureId};
 pub use crate::resource::FontId;
 #[cfg(feature = "text")]
 pub use crate::text::{
-    FontFamily, Formatted, GlyphStyle, LineDecoration, LineHeight, LineKind, NamedColor, PlacedGlyph, PlacedLine,
-    ResetTarget, Shadow, TextAlign, TextConfig, TextFormat, TextFormatError, TextLayout, TextRow, TextStyle,
+    FontFamily, Formatted, GlyphMethod, GlyphStyle, LineDecoration, LineHeight, LineKind, NamedColor, PlacedGlyph,
+    PlacedLine, ResetTarget, Shadow, TextAlign, TextConfig, TextFormat, TextFormatError, TextLayout, TextObject, TextRow,
+    TextStyle, TextWrite, YAxis, write_text,
 };
 pub use crate::vertex::{Vertex, VertexLayout};
 pub use crate::wgsl;

@@ -11,6 +11,8 @@ use crate::error::LonasError;
 use shader::{CheckedShader, ShaderReflection, check_wgsl};
 use crate::slots::{SlotId, Slots};
 #[cfg(feature = "text")]
+use crate::text::vector::{GlyphShape, ShapeKey, VectorCache, tessellate_glyph};
+#[cfg(feature = "text")]
 use crate::text::{FontData, TextConfig};
 pub(crate) use texture::TextureData;
 
@@ -77,6 +79,15 @@ pub struct ResourceManager {
     fonts: Slots<FontData>,
     #[cfg(feature = "text")]
     text_config: TextConfig,
+    // 三角形化したグリフ（§13 ベクター）
+    #[cfg(feature = "text")]
+    vector_cache: VectorCache,
+    // ResourceManager のフレームの番号。end_frame で進める（§13 書き込み：write_text の細部）
+    #[cfg(feature = "text")]
+    text_frame: u64,
+    // このフレームに write_text が作ったグリフの数（§13 グリフを作る負担を分ける）
+    #[cfg(feature = "text")]
+    new_glyphs: u32,
     changes: Vec<ResourceChange>,
 }
 
@@ -98,6 +109,12 @@ impl ResourceManager {
             fonts: Slots::new(id, 0),
             #[cfg(feature = "text")]
             text_config: config.text,
+            #[cfg(feature = "text")]
+            vector_cache: VectorCache::default(),
+            #[cfg(feature = "text")]
+            text_frame: 0,
+            #[cfg(feature = "text")]
+            new_glyphs: 0,
             changes: Vec::new(),
         }
     }
@@ -171,6 +188,7 @@ impl ResourceManager {
     pub fn unregister_font(&mut self, id: FontId) {
         self.check_owner(id.0, "FontId");
         self.fonts.remove(id.0).expect("登録解除済みの FontId を解除しました");
+        self.vector_cache.remove_font(id);
     }
 
     #[cfg(feature = "text")]
@@ -187,6 +205,46 @@ impl ResourceManager {
     #[cfg(feature = "text")]
     pub(crate) fn text_config(&self) -> &TextConfig {
         &self.text_config
+    }
+
+    // キャッシュになければ三角形化して入れる。limited なら max_new_glyphs_per_frame を超えた分は作らず false
+    #[cfg(feature = "text")]
+    pub(crate) fn ensure_vector_shape(&mut self, key: ShapeKey, limited: bool) -> bool {
+        if self.vector_cache.get(&key, self.text_frame).is_some() {
+            return true;
+        }
+
+        if limited && self.text_config.max_new_glyphs_per_frame.is_some_and(|max| self.new_glyphs >= max) {
+            return false;
+        }
+
+        let shape = tessellate_glyph(self.font(key.font), &key);
+        self.vector_cache.insert(key, shape, self.text_frame);
+
+        if limited {
+            self.new_glyphs += 1;
+        }
+
+        true
+    }
+
+    // ensure_vector_shape の後に呼ぶ
+    #[cfg(feature = "text")]
+    pub(crate) fn vector_shape(&self, key: &ShapeKey) -> &GlyphShape {
+        self.vector_cache.peek(key).expect("キャッシュにない形です")
+    }
+
+    #[cfg(feature = "text")]
+    pub(crate) fn vector_cache(&self) -> &VectorCache {
+        &self.vector_cache
+    }
+
+    // end_frame の最後に呼ぶ。キャッシュの追い出し → 作った数を 0 に → フレームの番号を進める
+    #[cfg(feature = "text")]
+    pub(crate) fn finish_text_frame(&mut self) {
+        self.vector_cache.evict(self.text_config.vector_cache_max_bytes, self.text_frame);
+        self.new_glyphs = 0;
+        self.text_frame += 1;
     }
 
     // ---- end_frame（GpuContext）が使う ----

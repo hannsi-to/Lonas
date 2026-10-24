@@ -1026,6 +1026,7 @@ object.end(&mut draw_manager);
   - **前フレームとの比較：**`index()` で書いた値はそのフレームの一覧に溜め、`end` で形ごとに（`index()` の値か、自動で作った値を）並べてから、前フレームのインデックスと比べ、変わった位置の最小〜最大だけを送る。以前は書きながらその場で比べていたが、形ごとに混ぜると並べる前の位置が決まらないため、この方式にした
   - 自動で作ったインデックスは形ごとに持ち、頂点の位置・頂点数・区切り・`index()` で指定する形のどれかが変わった時だけ作り直す。`index()` で指定した形は三角形化しない（自分と交差する形などでもよい）
   - `begin_shape()` を使わずに `index()` を呼ぶ場合は、形が 1 つだけという扱いになり、以前と同じく `index()` のインデックスだけを使う
+  - **頂点が 1 つもない形は、`index()` を呼ばなくても `paint_type()` を要しない**（作る三角形がないため）。`begin` の直後に `begin_shape()` を呼んだ時の空の最初の形や、何も書かなかった `Object*` で panic しない（`write_text` はグリフごとに `begin_shape()` を呼ぶため、§13）
 
 ### 塗り方：PaintType
 
@@ -2337,6 +2338,11 @@ let mut resource_manager = ResourceManager::new(ResourceConfig {
 - キャッシュのキーは `(FontId, グリフの番号, 大きさの段階)`。可変フォントの軸の値は、扱うときにキーへ足す
 - 1 つのグリフの形は大きさの段階の数（数種類）で済む。切り上げるため、誤差は常に 0.25px 以下になる
 - 却下案：許容誤差を 1 つの値に固定する。大きい文字で角が見え、小さい文字で頂点が無駄になる
+- 大きさの段階は `2^ceil(log2(size × pixel_scale))` の画素（1〜2^16 に収める）。キーには指数を入れる
+- **合成の太字・縁取りの量もキーに入れる。**キーは `(FontId, グリフの番号, 大きさの段階, 太らせる量, 縁取りの太さ)`。量は `TextStyle` ごとに違えられるため、有無だけでは別の量の形を取り違える（量は f32 のビット列で持ち、0 なら合成しない）
+- 縁取りの形は、字の形（合成の太字を含む）を 8 方向へ `outline_width` ずらした複製と元の形を、nonzero で 1 つにしたもの。字の形とは別のキャッシュに置き、字の後ろに書く
+- 合成の太字は、元の形と上下左右に `bold_weight` ずらした 4 つの複製を nonzero で 1 つにする
+- キャッシュの大きさは、頂点（8 バイト）とインデックス（4 バイト）の数と、形ごとの管理の分で数える
 
 **決定：ベクターのキャッシュは `TextConfig::vector_cache_max_bytes` を上限とし、超えたら最後に使ったフレームが古い形から捨てる。**
 
@@ -2420,7 +2426,7 @@ pub enum TextFormat {
 }
 
 pub struct LineDecoration { pub line_width: f32, pub joint_type: JointType, pub lines: u32 } // 太さは em に対する割合。lines が 2 なら二重線
-pub struct Shadow { pub distance: f32, pub angle: f32 } // distance は em に対する割合、angle は度（右が 0、画面上で時計回り）
+pub struct Shadow { pub distance: f32, pub angle: f32, pub color: Option<Color> } // distance は em に対する割合、angle は度（右が 0、画面上で時計回り）。color は下記
 ```
 
 - 色は gueiz の `[f32; 4]` ではなく `Color`（sRGB、§11 色）で受け取る。頂点の色と扱いを揃えるため
@@ -2546,6 +2552,34 @@ pub struct PlacedLine {
 - **決定：線は、同じ行で `LineDecoration`・色・`Ghost`・`FontSize` が同じ字が続く間を 1 本にする。**色などが変わる位置で切る（線の色は字の色と同じ）。行の端で切る。範囲は字の送り幅（`SpaceX` を含む）の左端から右端まで
 - `TextLayout` は `FontId` を持つだけで、フォントのデータを借りない（`ResourceManager` を `&mut` で借りたまま持てる）
 
+### 書き込み：write_text の細部
+
+**決定：`write_text` は、グリフごとに 影 → 縁取り → 字 の順に書き、すべてのグリフの後に下線などの線を書く。**
+
+- 頂点は `Vertex` の位置と色だけを書く（`uv`・`normal` は 0）。色は sRGB のまま入れる（§11 色）
+- 字の色は `GlyphStyle::color`（なければ `TextWrite::color`）。不透明度に `1 − ghost` を掛ける
+- **決定：影の色は `Shadow::color` で指定できる。**`None` なら字の色の rgb を 0.25 倍したもの（不透明度は字と同じ。gueiz と同じ）。`Some` ならその色で、不透明度に `1 − ghost` を掛ける（縁取りの色と同じ扱い）。影は字と縁取りの形を、`Shadow::offset() × size` だけずらして書く（y は `TextLayout` の座標で下向き）
+  - 書き方：`§[shadow 距離 角度 色]`。数は前から距離・角度の順で、省いたものは既定値。色は数の後ろに 1 つだけ、`#rrggbb` などの 16 進か名前の付いた色で書く（`§[shadow #000]`・`§[shadow 0.1 #f00]` も書ける）。`r g b` の数の並びは距離・角度と見分けられないため、影では使えない
+  - 却下案：影の色を `TextWrite` に置く。文の中の場所ごとに変えられない
+  - 却下案：影の色を別の書式（`ShadowColor`）にする。影と色を別々に戻せてしまい、書式の数も増える
+- 縁取りの色は `TextFormat::Outline` の色。不透明度に `1 − ghost` を掛ける
+- **注意：`Ghost` と、不透明度が 1 未満の色は、`Blend::Alpha` で描く `Object*` でだけ透ける。**`Opaque` は不透明度を捨てる（§10 描画順）。`write_text` は、`Ghost` のあるテキストを `blend()` で `Opaque` を指定した `Object*` に書いた時に、`Object*` ごとに一度だけ `log` で警告する（`blend()` を呼んでいない場合は分からないため警告しない。§13 3D の影・縁取りと同じ）
+- **注意：既定の影の色は字より暗いため、暗い背景の上ではほとんど見えない。**その場合は `Shadow::color` を指定する。また `Shadow` の既定の距離（0.06 em）は、24px の字で 1.4px ほど。目立たせたい場合は距離を大きくする
+- `Italic`（合成）は、フォントの座標の y（ベースラインからの高さ）に比例して x をずらす。影・縁取りも同じく傾ける
+- `HideBox` は、字・影・縁取りの代わりに、送り幅 × `TextRow::height` の四角形（行の上端から）を字の色で書く
+- `Obfuscated` は、候補の字（gueiz の `OBFUSCATION_POOL`、英数字と記号）のうち、そのグリフのフォントにある字から、`(obfuscation_seed, TextLayout の中のグリフの番号)` の hash で選ぶ。フォントに候補がなければ元の字を書く
+- 線は `LineDecoration::lines` 本を、まとまりの中心が `PlacedLine` の位置に来るように、太さの 2 倍の間隔で並べる（gueiz と同じ）。端は `joint_type` に合わせ、`object/stroke.rs` で作る。線には影を付けない
+- 線と `HideBox` の三角形は、書き込む座標で反時計回りに揃える
+- **決定：`write_text` が三角形化するのは、キャッシュにない形だけ。**1 つのグリフに字と縁取りの 2 つの形が要る場合は、どちらも作れた時だけ書く（上限で片方しか作れないフレームは、影も含めてそのグリフを書かない）
+- `TextWrite::pixel_scale` が 0 以下か有限でなければ panic
+- `GlyphMethod` の `Bitmap` / `Sdf` / `Msdf` は、段階 11・12 で足す
+
+**決定：`ResourceManager` は、自分のフレームの番号を持ち、`end_frame` で進める。**
+
+- `write_text`・`prepare_glyphs` は、使った形にこの番号を記録する。`GpuContext` のフレーム番号は使わない（`ResourceManager` は `GpuContext` を知らない）
+- `end_frame` は、ベクターのキャッシュの追い出し・1 フレームに作った数の 0 への戻し・番号を進める、の順に行う
+- `unregister_font` は、そのフォントの形をキャッシュから捨てる
+
 ### フォントの組とフォールバック
 
 **決定：太字・斜体の書体をまとめた `FontFamily` を、優先する順に `TextStyle::families` に並べる。字がない場合は次の `FontFamily` で描く。**
@@ -2583,7 +2617,7 @@ pub struct FontFamily {
 
 - 不透明は深度を書き、`Greater` で比べる（§11 深度バッファ）ため、同じ深さで後から書いた字が消える
 - 3D の半透明は深度を書かない（§10 描画順）。`Object*` の中ではインデックスの順に重なるため、影 → 縁取り → 字 の順に正しく描ける
-- `write_text` は、影・縁取りのある `TextLayout` を、`blend()` で `Opaque` を指定した `Object3D` に書いた時に、一度だけ `log` で警告する（`blend()` を呼んでいない場合は `LonasConfig` の値が使われ、`Object*` からは分からないため警告しない）
+- `write_text` は、影・縁取りのある `TextLayout` を、`blend()` で `Opaque` を指定した `Object3D` に書いた時に、`Object3D` ごとに一度だけ `log` で警告する（`blend()` を呼んでいない場合は `LonasConfig` の値が使われ、`Object*` からは分からないため警告しない）
 - 却下案：影・縁取りを z 方向にずらす。どちらが「後ろ」かは見る向きで変わり、裏から見ると影が手前に来る。ずらす量も距離で変わる
 
 ### 小さい文字

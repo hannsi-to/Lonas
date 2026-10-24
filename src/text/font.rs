@@ -1,5 +1,7 @@
 // 登録したフォントと、太字・斜体の書体の組（§13 フォントの登録・フォントの組とフォールバック）
 
+use std::sync::Arc;
+
 use harfrust::Font;
 use skrifa::raw::types::F48Dot16;
 
@@ -16,16 +18,24 @@ pub(crate) struct FontMetrics {
     pub strikeout_position: f32,
 }
 
+// TextFormat::Obfuscated の候補の字（gueiz と同じ）
+const OBFUSCATION_POOL: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789#$%&@?!";
+
 pub(crate) struct FontData {
+    // skrifa で輪郭を取り出すために、元のバイト列も持つ（HarfRust の Font と共有する）
+    pub bytes: Arc<Vec<u8>>,
     pub font: Font,
     pub units_per_em: f32,
     pub metrics: FontMetrics,
+    // OBFUSCATION_POOL のうち、このフォントにある字のグリフ
+    pub obfuscation_glyphs: Vec<u32>,
 }
 
 impl FontData {
     // 読めない、または 1 em の大きさが 0 なら None。コレクションは先頭のフォントだけを使う
     pub(crate) fn new(bytes: Vec<u8>) -> Option<Self> {
-        let font = Font::new(bytes, 0)?;
+        let bytes = Arc::new(bytes);
+        let font = Font::new(Arc::clone(&bytes) as Arc<dyn AsRef<[u8]> + Send + Sync>, 0)?;
         let units_per_em = font.units_per_em();
 
         if units_per_em == 0 {
@@ -33,8 +43,11 @@ impl FontData {
         }
 
         let metrics = read_metrics(&font, units_per_em as f32);
+        let charmap = font.charmap();
+        let obfuscation_glyphs =
+            OBFUSCATION_POOL.chars().filter_map(|character| charmap.map_unicode(character)).map(|glyph| glyph.to_u32()).collect();
 
-        Some(Self { font, units_per_em: units_per_em as f32, metrics })
+        Some(Self { bytes, font, units_per_em: units_per_em as f32, metrics, obfuscation_glyphs })
     }
 
     // cmap にある字か。Default_Ignorable の文字は見ない（§13 フォントの組とフォールバック）

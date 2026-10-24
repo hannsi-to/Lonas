@@ -3,7 +3,7 @@
 
 pub(crate) mod core;
 pub(crate) mod instance_slots;
-mod stroke;
+pub(crate) mod stroke;
 #[cfg(test)]
 mod tests;
 pub(crate) mod paint_type;

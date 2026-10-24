@@ -313,6 +313,9 @@ impl GpuContext {
 
             // 2. リソースの反映
             self.renderer.apply_resource_changes(&self.device, &self.queue, resource_manager);
+            // このフレームの write_text は終わっている。グリフのキャッシュの追い出しとフレームの区切り（§13）
+            #[cfg(feature = "text")]
+            resource_manager.finish_text_frame();
 
             // 3. ヒープの処理。TAA を使うサーフェスがあれば、インスタンスの前のフレームの値を残す
             let keep_previous = surfaces_use_taa(&self.surfaces, &seen);
