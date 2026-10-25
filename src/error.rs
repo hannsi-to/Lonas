@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use crate::config::PresentMode;
+use crate::config::{AlphaMode, PresentMode};
 
 #[non_exhaustive]
 #[derive(Debug)]
@@ -19,6 +19,7 @@ pub enum LonasError {
     UnsupportedSurfaceFormat,
     UnsupportedSampleCount { requested: u32, supported: Vec<u32> },
     UnsupportedPresentMode(PresentMode),
+    UnsupportedAlphaMode(AlphaMode),
     // アトラスの大きさ・レイヤー数・バインドグループの数などがアダプターの上限を超えている
     LimitExceeded { limit: &'static str, requested: u64, max: u64 },
 
@@ -45,6 +46,7 @@ impl fmt::Display for LonasError {
                 write!(f, "MSAA のサンプル数 {requested} に対応していません（対応しているのは {supported:?}）")
             }
             LonasError::UnsupportedPresentMode(mode) => write!(f, "サーフェスが Present mode {mode:?} に対応していません"),
+            LonasError::UnsupportedAlphaMode(mode) => write!(f, "サーフェスが重ね方 {mode:?} に対応していません"),
             LonasError::LimitExceeded { limit, requested, max } => {
                 write!(f, "{limit} がアダプターの上限を超えています（{requested} > {max}）")
             }

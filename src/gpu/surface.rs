@@ -1,6 +1,6 @@
 // サーフェス（ウィンドウ）ごとの状態（§8・§9・§11 複数ウィンドウ・深度バッファ）
 
-use crate::config::{AntiAliasing, MotionVectorFormat, PresentMode};
+use crate::config::{AlphaMode, AntiAliasing, MotionVectorFormat, PresentMode};
 use crate::error::LonasError;
 use crate::render::antialiasing::FrameTargets;
 use crate::slots::SlotId;
@@ -49,6 +49,7 @@ impl SurfaceState {
         width: u32,
         height: u32,
         present_mode: PresentMode,
+        alpha_mode: AlphaMode,
         anti_aliasing: AntiAliasing,
     ) -> Result<Self, LonasError> {
         let capabilities = surface.get_capabilities(adapter);
@@ -60,12 +61,14 @@ impl SurfaceState {
             .find(|format| format.is_srgb())
             .ok_or(LonasError::UnsupportedSurfaceFormat)?;
         let present_mode = resolve_present_mode(present_mode, &capabilities.present_modes)?;
+        let alpha_mode = resolve_alpha_mode(alpha_mode, &capabilities.alpha_modes)?;
         let mut config = surface
             .get_default_config(adapter, width.max(1), height.max(1))
             .ok_or(LonasError::UnsupportedSurfaceFormat)?;
 
         config.format = format;
         config.present_mode = present_mode;
+        config.alpha_mode = alpha_mode;
 
         Ok(Self::with_target(
             Target::Window {
@@ -303,9 +306,53 @@ fn resolve_present_mode(mode: PresentMode, supported: &[wgpu::PresentMode]) -> R
     }
 }
 
+// 頼まれた重ね方を、サーフェスが対応しているものから選ぶ（§8 サーフェスの重ね方）
+fn resolve_alpha_mode(mode: AlphaMode, supported: &[wgpu::CompositeAlphaMode]) -> Result<wgpu::CompositeAlphaMode, LonasError> {
+    let candidates: &[wgpu::CompositeAlphaMode] = match mode {
+        AlphaMode::Opaque => return Ok(wgpu::CompositeAlphaMode::Opaque),
+        AlphaMode::Transparent => &[wgpu::CompositeAlphaMode::PreMultiplied, wgpu::CompositeAlphaMode::PostMultiplied],
+        AlphaMode::PreMultiplied => &[wgpu::CompositeAlphaMode::PreMultiplied],
+        AlphaMode::PostMultiplied => &[wgpu::CompositeAlphaMode::PostMultiplied],
+    };
+
+    candidates
+        .iter()
+        .copied()
+        .find(|candidate| supported.contains(candidate))
+        .ok_or(LonasError::UnsupportedAlphaMode(mode))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opaque_always_resolves() {
+        assert_eq!(resolve_alpha_mode(AlphaMode::Opaque, &[]).unwrap(), wgpu::CompositeAlphaMode::Opaque);
+    }
+
+    #[test]
+    fn transparent_prefers_pre_multiplied() {
+        let both = [wgpu::CompositeAlphaMode::PostMultiplied, wgpu::CompositeAlphaMode::PreMultiplied];
+        let post_only = [wgpu::CompositeAlphaMode::Opaque, wgpu::CompositeAlphaMode::PostMultiplied];
+
+        assert_eq!(resolve_alpha_mode(AlphaMode::Transparent, &both).unwrap(), wgpu::CompositeAlphaMode::PreMultiplied);
+        assert_eq!(resolve_alpha_mode(AlphaMode::Transparent, &post_only).unwrap(), wgpu::CompositeAlphaMode::PostMultiplied);
+    }
+
+    #[test]
+    fn unsupported_alpha_mode_is_error() {
+        let opaque_only = [wgpu::CompositeAlphaMode::Opaque];
+
+        assert!(matches!(
+            resolve_alpha_mode(AlphaMode::Transparent, &opaque_only),
+            Err(LonasError::UnsupportedAlphaMode(AlphaMode::Transparent))
+        ));
+        assert!(matches!(
+            resolve_alpha_mode(AlphaMode::PreMultiplied, &opaque_only),
+            Err(LonasError::UnsupportedAlphaMode(AlphaMode::PreMultiplied))
+        ));
+    }
 
     #[test]
     fn auto_modes_always_resolve() {

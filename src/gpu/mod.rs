@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
-use crate::config::{AntiAliasing, Backend, LonasConfig, PresentMode};
+use crate::config::{AlphaMode, AntiAliasing, Backend, LonasConfig, PresentMode};
 use crate::error::LonasError;
 use crate::math::Vector2f;
 use crate::resource::ResourceManager;
@@ -115,7 +115,7 @@ impl GpuContext {
     ) -> Result<(Self, SurfaceId), LonasError> {
         config.validate();
 
-        let instance = create_instance(config.backend);
+        let instance = create_instance(config.backend, config.alpha_mode);
         let surface = instance.create_surface(window).map_err(LonasError::CreateSurface)?;
         let mut context = pollster::block_on(Self::with_instance(instance, Some(&surface), config))?;
         let id = context.push_surface(surface, width, height)?;
@@ -147,7 +147,7 @@ impl GpuContext {
         }
 
         let lock = GpuTestLock::acquire();
-        let mut context = pollster::block_on(Self::with_instance(create_instance(config.backend), None, config))?;
+        let mut context = pollster::block_on(Self::with_instance(create_instance(config.backend, config.alpha_mode), None, config))?;
         context._gpu_test_lock = Some(lock);
 
         Ok(context)
@@ -217,7 +217,7 @@ impl GpuContext {
         self.check_anti_aliasing(anti_aliasing)?;
 
         let state =
-            SurfaceState::new(surface, &self.adapter, width, height, self.config.initial_present_mode, anti_aliasing)?;
+            SurfaceState::new(surface, &self.adapter, width, height, self.config.initial_present_mode, self.config.alpha_mode, anti_aliasing)?;
 
         Ok(SurfaceId(self.surfaces.insert(state)))
     }
@@ -576,7 +576,7 @@ impl GpuContext {
     }
 }
 
-fn create_instance(backend: Backend) -> wgpu::Instance {
+fn create_instance(backend: Backend, alpha_mode: AlphaMode) -> wgpu::Instance {
     let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
 
     descriptor.backends = match backend {
@@ -586,6 +586,11 @@ fn create_instance(backend: Backend) -> wgpu::Instance {
         Backend::Metal => wgpu::Backends::METAL,
         Backend::OpenGl => wgpu::Backends::GL,
     };
+
+    // DirectX 12 は HWND から作った描画先だと Opaque しか使えない。透かすときは Visual から作る（§8 サーフェスの重ね方）
+    if alpha_mode != AlphaMode::Opaque {
+        descriptor.backend_options.dx12.presentation_system = wgpu::Dx12SwapchainKind::DxgiFromVisual;
+    }
 
     wgpu::Instance::new(descriptor)
 }

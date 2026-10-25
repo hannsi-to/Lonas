@@ -2,7 +2,7 @@
 
 pub use crate::color::Color;
 pub use crate::config::{
-    AntiAliasing, Backend, BindingConfig, BindingSlot, Blend, CoordinateSystemConfig, CullMode, FilterMode, Handedness,
+    AlphaMode, AntiAliasing, Backend, BindingConfig, BindingSlot, Blend, CoordinateSystemConfig, CullMode, FilterMode, Handedness,
     LonasConfig, MemoryCapacity, MemoryConfig, MotionVectorFormat, Origin2D, PresentMode, GlyphAtlasConfig, TaaConfig, TextureAtlasConfig,
 };
 pub use crate::draw::{Camera2D, Camera3D, CameraId, DrawManager2D, DrawManager3D, ProjectionMode};
