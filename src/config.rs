@@ -38,6 +38,9 @@ pub struct LonasConfig {
     pub backend: Backend,
     /// 各サーフェスの最初の Present mode（§8）。実行中は set_present_mode で変更できる
     pub initial_present_mode: PresentMode,
+    /// サーフェスの重ね方（§8 サーフェスの重ね方）。GpuContext::new と add_surface で作るすべてのサーフェスがこの値になる
+    /// Opaque 以外では、DirectX 12 の描画先を DirectComposition の Visual から作る（HWND から作ると Opaque しか使えないため）
+    pub alpha_mode: AlphaMode,
     /// TAA の細かい値（§11）
     pub taa: TaaConfig,
     /// TextureAtlas の大きさ・レイヤー数など（§11）
@@ -177,6 +180,20 @@ pub enum PresentMode {
     FifoRelaxed,
     Mailbox,
     Immediate,
+}
+
+// サーフェスの色を、OS の合成器がウィンドウの後ろとどう重ねるか（§8 サーフェスの重ね方）
+// 透明に塗ったところを透かすには Opaque 以外を選ぶ。Blend::Alpha で透明にクリアした上に描くと、色はアルファを掛けた値になる
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum AlphaMode {
+    // 透かさない。すべての環境で使える
+    Opaque,
+    // 透かす。使えるものを選ぶ（PreMultiplied → PostMultiplied）
+    Transparent,
+    // 色はアルファを掛けた値として重ねる
+    PreMultiplied,
+    // 合成器がアルファを掛けて重ねる
+    PostMultiplied,
 }
 
 pub struct TaaConfig {
@@ -339,6 +356,7 @@ pub(crate) mod tests {
             initial_anti_aliasing: AntiAliasing::None,
             backend: Backend::Auto,
             initial_present_mode: PresentMode::AutoVsync,
+            alpha_mode: AlphaMode::Opaque,
             taa: TaaConfig {
                 history_blend_min: 0.1,
                 history_blend_max: 0.95,

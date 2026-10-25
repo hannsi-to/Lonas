@@ -231,6 +231,8 @@ pub struct LonasConfig {
     /// 各サーフェスの最初の Present mode（§8）
     /// 実行中は set_present_mode でサーフェスごとに変更できる
     pub initial_present_mode: PresentMode,
+    /// サーフェスの重ね方（§8 サーフェスの重ね方）。すべてのサーフェスで同じ
+    pub alpha_mode: AlphaMode,
     /// TAA の細かい値（§11 参照）
     pub taa: TaaConfig,
     /// TextureAtlas の大きさ・レイヤー数など（§11 参照）
@@ -819,6 +821,26 @@ impl GpuContext {
   - バッチング（§10）は常に `multi_draw_indexed_indirect` で行い、`Object*` ごとに描画を呼ぶ道は持たない
   - **wgpu 30 では `MULTI_DRAW_INDIRECT` という機能はない。**`multi_draw_indexed_indirect` は `DownlevelFlags::INDIRECT_EXECUTION` があれば使え、使えない環境では wgpu が内部で代わりに処理する。そのため判定は `INDIRECT_EXECUTION` に含まれる（段階 4 で確認）
   - 却下案：インスタンスを頂点バッファ（インスタンス単位）で渡す道を別に用意する（環境ごとにユーザーのシェーダーを書き分ける必要があり、§10 の「シェーダーを 1 つにする」決定と衝突する）
+
+### サーフェスの重ね方
+
+**決定：サーフェスの色を OS の合成器がどう重ねるかを `LonasConfig::alpha_mode` で指定する。透明に塗ったところを透かすには `Opaque` 以外を選ぶ。**
+
+```rust
+pub enum AlphaMode {
+    Opaque,         // 透かさない。すべての環境で使える
+    Transparent,    // 透かす。使えるものを Lonas が選ぶ（PreMultiplied → PostMultiplied）
+    PreMultiplied,  // 色はアルファを掛けた値として重ねる
+    PostMultiplied, // 合成器がアルファを掛けて重ねる
+}
+```
+
+- 透かせる重ね方は環境ごとに違う。DirectX 12 / Vulkan（Windows）は `PreMultiplied`、Metal は `PostMultiplied` しか名乗らない。環境ごとに書き分けずに済むよう `Transparent` を置く
+- サーフェスが対応していなければ `Err(UnsupportedAlphaMode)`（`Opaque` は必ず使えるため `Err` にならない）
+- **DirectX 12 は HWND から作った描画先だと `Opaque` しか使えない。**`Opaque` 以外のときは、wgpu の `Dx12SwapchainKind::DxgiFromVisual`（DirectComposition の Visual から描画先を作る）を使う。RenderDoc で見られなくなるため、`Opaque` のときは使わない
+- Visual を使うかはインスタンスを作るときに決まり、サーフェスごとには変えられない。そのため Present mode と違ってサーフェスごとの値にせず、設定に固定する
+- `Blend::Alpha` で透明にクリアした上に描くと、描画先の色はアルファを掛けた値になる。`PreMultiplied` ならそのまま正しく透ける
+- 却下案：サーフェスごとに `set_alpha_mode` で変える（DirectX 12 の Visual の切り替えはインスタンスの作り直しになり、サーフェスごとにはできない）
 
 ### ウィンドウとイベントループ
 

@@ -1,7 +1,7 @@
 // examples で共有する設定。LonasConfig は既定値を持たないため、すべての項目を書く（§3）
 
 use lonas::lonas::{
-    AntiAliasing, Backend, BindingConfig, BindingSlot, Blend, CoordinateSystemConfig, CullMode, FilterMode, GlyphAtlasConfig, Handedness,
+    AlphaMode, AntiAliasing, Backend, BindingConfig, BindingSlot, Blend, CoordinateSystemConfig, CullMode, FilterMode, GlyphAtlasConfig, Handedness,
     LonasConfig, MemoryCapacity, MemoryConfig, MotionVectorFormat, Origin2D, PresentMode, ResourceConfig, TaaConfig,
     TextureAtlasConfig,
 };
@@ -62,6 +62,7 @@ pub fn config() -> LonasConfig {
         initial_anti_aliasing: AntiAliasing::None,
         backend: Backend::Auto,
         initial_present_mode: PresentMode::AutoVsync,
+        alpha_mode: AlphaMode::Opaque,
         taa: TaaConfig {
             history_blend_min: 0.1,
             history_blend_max: 0.95,

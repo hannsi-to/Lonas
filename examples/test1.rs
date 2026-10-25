@@ -2,7 +2,7 @@
 // cargo run --example test1（T：TAA への切り替えとカメラのカット、V：垂直同期の切り替え）
 
 use lonas::lonas::{
-    AntiAliasing, Backend, BindingConfig, BindingSlot, Blend, Camera2D, Camera3D, Color, CoordinateSystemConfig, CullMode,
+    AlphaMode, AntiAliasing, Backend, BindingConfig, BindingSlot, Blend, Camera2D, Camera3D, Color, CoordinateSystemConfig, CullMode,
     DrawManager2D, DrawManager3D, FilterMode, GlyphAtlasConfig, GpuContext, Handedness, Instance2D, Instance3D, InstanceId,
     LonasConfig, LonasError, Matrix4f, MemoryCapacity, MemoryConfig, MemoryUpdateType, MotionVectorFormat, Object2D,
     Object3D, Origin2D, PresentMode, ProjectionMode, Quaternion, ResourceConfig, ResourceManager, ShaderId, SurfaceDraw,
@@ -267,6 +267,7 @@ impl TestApplication {
             initial_anti_aliasing: AntiAliasing::Msaa { sample_count: 4 },
             backend: Backend::Auto,
             initial_present_mode: PresentMode::AutoVsync,
+            alpha_mode: AlphaMode::Opaque,
             taa: TaaConfig {
                 history_blend_min: 0.1,
                 history_blend_max: 0.95,
