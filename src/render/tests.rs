@@ -5,6 +5,7 @@ use crate::color::Color;
 use crate::config::tests::sample_config;
 use crate::config::{Blend, CullMode};
 use crate::draw::{Camera2D, Camera3D, DrawManager2D, DrawManager3D, ProjectionMode};
+use crate::draw::DrawView;
 use crate::gpu::{GpuContext, SurfaceDraw, SurfaceId};
 use crate::instance::{Instance2D, Instance3D, Visibility};
 use crate::math::{Matrix4f, Quaternion, Vector2f, Vector3f};
@@ -113,11 +114,11 @@ fn draw_2d(scene: &mut Scene, manager: &mut DrawManager2D, objects: &mut [&mut O
         object.end(manager);
     }
 
-    scene.gpu.end_frame(&mut scene.resources, &mut [SurfaceDraw {
+    scene.gpu.end_frame(&mut scene.resources, &[SurfaceDraw {
         surface: scene.surface,
         clear_color: Some(Color::BLACK),
-        draw_managers: &mut [manager],
-    }])
+        views: &[DrawView::new(&*manager)],
+    }], &mut [manager])
     .unwrap();
 
     scene.gpu.read_pixels(scene.surface)
@@ -140,11 +141,11 @@ fn draw_stroke(scene: &mut Scene, joint_type: JointType, dash: Option<Dash>) -> 
     object.vertex(Vertex::new_position_color(8.0, 32.0, 0.0, 1.0, 1.0, 1.0, 1.0));
     object.vertex(Vertex::new_position_color(56.0, 32.0, 0.0, 1.0, 1.0, 1.0, 1.0));
     object.end(&mut manager);
-    scene.gpu.end_frame(&mut scene.resources, &mut [SurfaceDraw {
+    scene.gpu.end_frame(&mut scene.resources, &[SurfaceDraw {
         surface: scene.surface,
         clear_color: Some(Color::BLACK),
-        draw_managers: &mut [&mut manager],
-    }])
+        views: &[DrawView::new(&manager)],
+    }], &mut [&mut manager])
     .unwrap();
 
     scene.gpu.read_pixels(scene.surface)
@@ -201,11 +202,11 @@ fn draw_two_squares(scene: &mut Scene) -> Vec<[u8; 4]> {
         }
     }
     object.end(&mut manager);
-    scene.gpu.end_frame(&mut scene.resources, &mut [SurfaceDraw {
+    scene.gpu.end_frame(&mut scene.resources, &[SurfaceDraw {
         surface: scene.surface,
         clear_color: Some(Color::BLACK),
-        draw_managers: &mut [&mut manager],
-    }])
+        views: &[DrawView::new(&manager)],
+    }], &mut [&mut manager])
     .unwrap();
 
     scene.gpu.read_pixels(scene.surface)
@@ -241,11 +242,11 @@ fn index_shape_and_fill_shape_are_both_drawn() {
         object.vertex(Vertex::new_position_color(x, y, 0.0, 1.0, 1.0, 1.0, 1.0));
     }
     object.end(&mut manager);
-    scene.gpu.end_frame(&mut scene.resources, &mut [SurfaceDraw {
+    scene.gpu.end_frame(&mut scene.resources, &[SurfaceDraw {
         surface: scene.surface,
         clear_color: Some(Color::BLACK),
-        draw_managers: &mut [&mut manager],
-    }])
+        views: &[DrawView::new(&manager)],
+    }], &mut [&mut manager])
     .unwrap();
     let pixels = scene.gpu.read_pixels(scene.surface);
 
@@ -275,11 +276,11 @@ fn stroke_object_draws_index_shape_and_line_shape() {
         object.vertex(Vertex::new_position_color(x, y, 0.0, 1.0, 1.0, 1.0, 1.0));
     }
     object.end(&mut manager);
-    scene.gpu.end_frame(&mut scene.resources, &mut [SurfaceDraw {
+    scene.gpu.end_frame(&mut scene.resources, &[SurfaceDraw {
         surface: scene.surface,
         clear_color: Some(Color::BLACK),
-        draw_managers: &mut [&mut manager],
-    }])
+        views: &[DrawView::new(&manager)],
+    }], &mut [&mut manager])
     .unwrap();
     let pixels = scene.gpu.read_pixels(scene.surface);
 
@@ -308,11 +309,11 @@ fn draw_with_hole(scene: &mut Scene, paint_type: PaintType) -> Vec<[u8; 4]> {
         object.vertex(Vertex::new_position_color(x, y, 0.0, 1.0, 1.0, 1.0, 1.0));
     }
     object.end(&mut manager);
-    scene.gpu.end_frame(&mut scene.resources, &mut [SurfaceDraw {
+    scene.gpu.end_frame(&mut scene.resources, &[SurfaceDraw {
         surface: scene.surface,
         clear_color: Some(Color::BLACK),
-        draw_managers: &mut [&mut manager],
-    }])
+        views: &[DrawView::new(&manager)],
+    }], &mut [&mut manager])
     .unwrap();
 
     scene.gpu.read_pixels(scene.surface)
@@ -347,7 +348,7 @@ fn manager_2d(scene: &mut Scene) -> DrawManager2D {
 
 // DrawManager の、そのフレームの描画の引数の instance_count
 fn instance_counts(scene: &Scene, manager: &mut DrawManager2D) -> Vec<u32> {
-    let resources = manager.core.resources.as_ref().unwrap();
+    let resources = manager.core.single_resources();
     let count: u32 = resources.last_batches.iter().map(|&(_, n)| n).sum();
     let device = scene.gpu.device();
     let readback = device.create_buffer(&wgpu::BufferDescriptor {
@@ -434,7 +435,7 @@ fn same_settings_are_batched() {
     draw_2d(&mut scene, &mut manager, &mut refs, 8.0);
 
     // 5 つの Object が 1 回の multi_draw_indexed_indirect にまとまる
-    assert_eq!(manager.core.resources.as_ref().unwrap().last_batches, vec![(0, 5)]);
+    assert_eq!(manager.core.single_resources().last_batches, vec![(0, 5)]);
     assert_eq!(scene.gpu.renderer().pipeline_count(), 1);
 }
 
@@ -477,11 +478,11 @@ fn draw_3d(scene: &mut Scene, manager: &mut DrawManager3D, objects: &mut [&mut O
         object.end(manager);
     }
 
-    scene.gpu.end_frame(&mut scene.resources, &mut [SurfaceDraw {
+    scene.gpu.end_frame(&mut scene.resources, &[SurfaceDraw {
         surface: scene.surface,
         clear_color: Some(Color::BLACK),
-        draw_managers: &mut [manager],
-    }])
+        views: &[DrawView::new(&*manager)],
+    }], &mut [manager])
     .unwrap();
 
     scene.gpu.read_pixels(scene.surface)
@@ -515,7 +516,7 @@ fn transparent_3d_is_sorted_across_objects() {
     // 線形で 赤 0.5、青 0.25（奥の青の上に手前の赤を半分重ねる）→ sRGB で約 (188, 0, 137)
     assert_color(center, [188, 0, 137], "奥から手前への重なり");
     // 2 つの Object の半透明は、インスタンスごとの引数（2 つ）を 1 回で描く
-    assert_eq!(manager.core.resources.as_ref().unwrap().last_batches, vec![(0, 2)]);
+    assert_eq!(manager.core.single_resources().last_batches, vec![(0, 2)]);
 }
 
 #[test]
@@ -598,11 +599,11 @@ fn draw_textured(scene: &mut Scene, manager: &mut DrawManager2D, objects: &mut [
         object.end(manager);
     }
 
-    scene.gpu.end_frame(&mut scene.resources, &mut [SurfaceDraw {
+    scene.gpu.end_frame(&mut scene.resources, &[SurfaceDraw {
         surface: scene.surface,
         clear_color: Some(Color::BLACK),
-        draw_managers: &mut [manager],
-    }])
+        views: &[DrawView::new(&*manager)],
+    }], &mut [manager])
     .unwrap();
 
     scene.gpu.read_pixels(scene.surface)
@@ -731,7 +732,7 @@ fn uniforms_are_per_object_and_batched() {
     assert_color(pixel(&pixels, 8, 8), [255, 0, 0], "赤の uniform");
     assert_color(pixel(&pixels, 40, 8), [0, 0, 255], "青の uniform");
     // uniform が違っても、同じシェーダーなら 1 回の DrawCall にまとまる
-    assert_eq!(manager.core.resources.as_ref().unwrap().last_batches, vec![(0, 2)]);
+    assert_eq!(manager.core.single_resources().last_batches, vec![(0, 2)]);
 
     // 値を変えた Object だけ見た目が変わる
     red.uniform(&Tint { color: [0.0, 1.0, 0.0, 1.0] });
@@ -764,11 +765,11 @@ fn partial_pixels(scene: &mut Scene, manager: &mut DrawManager2D, object: &mut O
     object.vertex(Vertex::new_position_color(SIZE as f32, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0));
     object.vertex(Vertex::new_position_color(0.0, SIZE as f32 * 0.7, 0.0, 1.0, 1.0, 1.0, 1.0));
     object.end(manager);
-    scene.gpu.end_frame(&mut scene.resources, &mut [SurfaceDraw {
+    scene.gpu.end_frame(&mut scene.resources, &[SurfaceDraw {
         surface: scene.surface,
         clear_color: Some(Color::BLACK),
-        draw_managers: &mut [manager],
-    }])
+        views: &[DrawView::new(&*manager)],
+    }], &mut [manager])
     .unwrap();
 
     // 履歴を 95% 使うフレームでは白や黒に近い値になるため、ほぼ白・黒も数える
@@ -834,4 +835,243 @@ fn unsupported_sample_count_is_error() {
         scene.gpu.set_anti_aliasing(scene.surface, AntiAliasing::Msaa { sample_count: 3 }),
         Err(crate::error::LonasError::UnsupportedSampleCount { requested: 3, .. }),
     ));
+}
+
+// ---- 同じ DrawManager* を複数のサーフェスに描く（§11）----
+
+// 赤の正方形（ワールドの 0〜16）と緑の正方形（64〜80）を持つ Object2D
+fn red_and_green(scene: &Scene) -> Object2D {
+    let mut object = square_object_2d(scene, Color::rgb(1.0, 0.0, 0.0), Vector2f::ZERO);
+    object.add_instance(Instance2D { position: Vector2f::new(64.0, 0.0), color: Color::rgb(0.0, 1.0, 0.0), ..Instance2D::default() });
+    object
+}
+
+// object を 1 回だけ end し、views の各サーフェスに描く。各サーフェスの画素と、ヒープへのコピー（Write）の数を返す
+fn draw_views(scene: &mut Scene, manager: &mut DrawManager2D, object: &mut Object2D, views: &[(SurfaceId, DrawView)]) -> (Vec<Vec<[u8; 4]>>, u64, u64) {
+    scene.gpu.begin_frame();
+    object.begin();
+    square_2d(object, 16.0);
+    object.end(manager);
+
+    let requested = manager.core.heap_requests.iter().filter(|request| matches!(request, crate::draw::HeapRequest::Write { .. })).count() as u64;
+    let before = scene.gpu.heap().copied_writes;
+    let draws: Vec<SurfaceDraw<'_>> = views
+        .iter()
+        .map(|(surface, view)| SurfaceDraw { surface: *surface, clear_color: Some(Color::BLACK), views: std::slice::from_ref(view) })
+        .collect();
+
+    scene.gpu.end_frame(&mut scene.resources, &draws, &mut [manager]).unwrap();
+
+    let copied = scene.gpu.heap().copied_writes - before;
+    let pixels = views.iter().map(|(surface, _)| scene.gpu.read_pixels(*surface)).collect();
+    (pixels, requested, copied)
+}
+
+fn camera_at(x: f32) -> Camera2D {
+    Camera2D { position: Vector2f::new(x, 0.0), rotation: 0.0, zoom: 1.0 }
+}
+
+#[test]
+fn one_manager_draws_to_two_surfaces_with_different_cameras() {
+    let Some(mut scene) = scene(SHADER_2D) else { return };
+    let second = scene.gpu.add_offscreen(SIZE, SIZE);
+    let mut manager = manager_2d(&mut scene);
+    let mut object = red_and_green(&scene);
+    let id = manager.default_camera_id();
+    let views = [(scene.surface, DrawView::new(&manager)), (second, manager.view().camera(id, camera_at(64.0)).into())];
+
+    for frame in 0..2 {
+        let (pixels, requested, copied) = draw_views(&mut scene, &mut manager, &mut object, &views);
+
+        assert_color(pixel(&pixels[0], 8, 8), [255, 0, 0], "1 枚目は DrawManager のカメラ（赤が左上）");
+        assert_color(pixel(&pixels[1], 8, 8), [0, 255, 0], "2 枚目は差し替えたカメラ（緑が左上）");
+        // ヒープへの転送は、サーフェスの数によらず要求の数だけ（1 回ずつ）
+        assert_eq!(copied, requested, "{frame} フレーム目の転送");
+        if frame == 0 {
+            assert!(requested > 0, "初回は転送がある");
+        }
+    }
+
+    // DrawManager のカメラは変わらない。カメラ・引数などのバッファはサーフェスごと
+    assert_eq!(*manager.camera(id), camera_at(0.0));
+    assert_eq!(manager.core.resources.len(), 2);
+    let cameras: Vec<&Vec<u8>> = manager.core.resources.values().map(|(resources, _)| &resources.last_camera_bytes).collect();
+    assert_ne!(cameras[0], cameras[1], "前のフレームのカメラ（TAA）はサーフェスごと");
+}
+
+#[test]
+fn uniforms_reach_both_surfaces() {
+    let Some(mut scene) = scene(SHADER_UNIFORM) else { return };
+    let second = scene.gpu.add_offscreen(SIZE, SIZE);
+    let mut manager = manager_2d(&mut scene);
+    let mut object = uniform_square(&scene, Vector2f::ZERO, [0.0, 0.0, 1.0, 1.0]);
+    let id = manager.default_camera_id();
+    let views = [(scene.surface, DrawView::new(&manager)), (second, manager.view().camera(id, camera_at(-32.0)).into())];
+
+    let (pixels, _, _) = draw_views(&mut scene, &mut manager, &mut object, &views);
+
+    assert_color(pixel(&pixels[0], 8, 8), [0, 0, 255], "1 枚目");
+    assert_color(pixel(&pixels[1], 40, 8), [0, 0, 255], "2 枚目は右へずれる");
+    assert_color(pixel(&pixels[1], 8, 8), [0, 0, 0], "2 枚目の左上は空");
+}
+
+#[test]
+fn crop_splits_one_view_across_surfaces_2d() {
+    let Some(mut scene) = scene(SHADER_2D) else { return };
+    let second = scene.gpu.add_offscreen(SIZE, SIZE);
+    let mut manager = manager_2d(&mut scene);
+    let mut object = red_and_green(&scene);
+    let full = Vector2f::new(128.0, 64.0);
+    let size = Vector2f::new(64.0, 64.0);
+    let views = [
+        (scene.surface, manager.view().crop(full, Vector2f::ZERO, size).into()),
+        (second, manager.view().crop(full, Vector2f::new(64.0, 0.0), size).into()),
+    ];
+
+    let (pixels, _, _) = draw_views(&mut scene, &mut manager, &mut object, &views);
+
+    assert_color(pixel(&pixels[0], 8, 8), [255, 0, 0], "左半分");
+    assert_color(pixel(&pixels[1], 8, 8), [0, 255, 0], "右半分");
+    assert_color(pixel(&pixels[0], 40, 8), [0, 0, 0], "左半分の右側は空");
+    // 切り取った後の行列で視界を判定するため、範囲の外の正方形は省かれる
+    for (surface, _) in &views {
+        let resources = &manager.core.resources[surface].0;
+        let count: u32 = resources.last_batches.iter().map(|&(_, n)| n).sum();
+        assert_eq!(count, 1, "引数は Object ごとに 1 つ");
+    }
+}
+
+#[test]
+fn crop_cuts_off_center_frustum_3d() {
+    let Some(mut scene) = scene(SHADER_3D) else { return };
+    let second = scene.gpu.add_offscreen(SIZE, SIZE);
+    let mut manager = manager_3d(&mut scene);
+    // 全体（128×64、縦横比 2）の右半分に入る位置の正方形
+    let mut quad = Object3D::new(&scene.gpu);
+    quad.memory_update_type(MemoryUpdateType::Static).paint_type(PaintType::Fill).shader(scene.shader).cull_mode(CullMode::None);
+    quad.add_instance(Instance3D {
+        transform: Matrix4f::from_translation(Vector3f::new(1.5, 0.0, 0.0)) * Matrix4f::from_scale(Vector3f::new(0.5, 0.5, 1.0)),
+        color: Color::rgb(1.0, 0.0, 0.0),
+        ..Instance3D::default()
+    });
+    let full = Vector2f::new(128.0, 64.0);
+    let size = Vector2f::new(64.0, 64.0);
+    let left: DrawView = manager.view().crop(full, Vector2f::ZERO, size).into();
+    let right: DrawView = manager.view().crop(full, Vector2f::new(64.0, 0.0), size).into();
+
+    scene.gpu.begin_frame();
+    quad.begin();
+    for (x, y) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+        quad.vertex(Vertex::new_position_color(x, y, 0.0, 1.0, 1.0, 1.0, 1.0));
+    }
+    quad.end(&mut manager);
+    scene.gpu.end_frame(&mut scene.resources, &[
+        SurfaceDraw { surface: scene.surface, clear_color: Some(Color::BLACK), views: std::slice::from_ref(&left) },
+        SurfaceDraw { surface: second, clear_color: Some(Color::BLACK), views: std::slice::from_ref(&right) },
+    ], &mut [&mut manager])
+    .unwrap();
+
+    // 全体の行列での x の位置を、右半分のピクセルに直して確かめる
+    let id = manager.default_camera_id();
+    let whole = manager.view_projection(id, full) * crate::math::Vector4f::new(1.5, 0.0, 0.0, 1.0);
+    let full_x = (whole.x / whole.w + 1.0) * 0.5 * full.x;
+    let right_x = (full_x - 64.0) as u32;
+    let left_pixels = scene.gpu.read_pixels(scene.surface);
+    let right_pixels = scene.gpu.read_pixels(second);
+
+    assert!(right_x < SIZE, "正方形は右半分にある: {full_x}");
+    assert_color(pixel(&right_pixels, right_x, SIZE / 2), [255, 0, 0], "右半分に映る");
+    assert_color(pixel(&right_pixels, SIZE - 2, SIZE / 2), [0, 0, 0], "右半分の右端は空");
+    assert!(left_pixels.iter().all(|p| p[..3] == [0, 0, 0]), "左半分には映らない");
+
+    // view_projection_in は切り取りを含む
+    let cropped = manager.view_projection_in(&right, id, size) * crate::math::Vector4f::new(1.5, 0.0, 0.0, 1.0);
+    let cropped_x = (cropped.x / cropped.w + 1.0) * 0.5 * size.x;
+    assert!((cropped_x - (full_x - 64.0)).abs() < 1e-3, "{cropped_x} と {full_x}");
+}
+
+#[test]
+fn surface_resources_are_dropped_after_unused_frames() {
+    let Some(mut scene) = scene(SHADER_2D) else { return };
+    let second = scene.gpu.add_offscreen(SIZE, SIZE);
+    let mut manager = manager_2d(&mut scene);
+    let mut object = red_and_green(&scene);
+    let both = [(scene.surface, DrawView::new(&manager)), (second, DrawView::new(&manager))];
+    let only_first = [(scene.surface, DrawView::new(&manager))];
+
+    draw_views(&mut scene, &mut manager, &mut object, &both);
+    assert_eq!(manager.core.resources.len(), 2);
+
+    for _ in 0..=scene.gpu.config().gc_unused_frames {
+        draw_views(&mut scene, &mut manager, &mut object, &only_first);
+    }
+    assert_eq!(manager.core.resources.len(), 1, "描かなくなったサーフェスのバッファは捨てる");
+}
+
+#[test]
+fn view_projection_in_uses_replaced_camera() {
+    let Some(mut scene) = scene(SHADER_2D) else { return };
+    let mut manager = manager_2d(&mut scene);
+    let id = manager.default_camera_id();
+    let other = manager.add_camera(camera_at(10.0));
+    let view: DrawView = manager.view().camera(id, camera_at(64.0)).into();
+    let viewport = Vector2f::new(64.0, 64.0);
+
+    assert_eq!(manager.view_projection_in(&DrawView::new(&manager), id, viewport), manager.view_projection(id, viewport));
+    let replaced = manager.add_camera(camera_at(64.0));
+    assert_eq!(manager.view_projection_in(&view, id, viewport), manager.view_projection(replaced, viewport));
+    // 差し替えていないカメラは DrawManager のまま
+    assert_eq!(manager.view_projection_in(&view, other, viewport), manager.view_projection(other, viewport));
+}
+
+fn misuse_message(f: impl FnOnce(&mut Scene, &mut DrawManager2D, &mut DrawManager2D)) -> String {
+    let Some(mut scene) = scene(SHADER_2D) else { return "GPU なし".into() };
+    let mut first = manager_2d(&mut scene);
+    let mut second = manager_2d(&mut scene);
+    let error = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&mut scene, &mut first, &mut second))).unwrap_err();
+
+    error.downcast_ref::<String>().cloned().or_else(|| error.downcast_ref::<&str>().map(|s| s.to_string())).unwrap()
+}
+
+#[test]
+fn draw_view_misuse_panics() {
+    if scene(SHADER_2D).is_none() {
+        return;
+    }
+
+    // draw_managers に同じ DrawManager* を 2 回渡すのは、&mut が 2 つになるためコンパイルエラー（テストは書けない）
+
+    let message = misuse_message(|scene, first, second| {
+        scene.gpu.begin_frame();
+        let view = DrawView::new(second);
+        let _ = scene.gpu.end_frame(&mut scene.resources, &[SurfaceDraw { surface: scene.surface, clear_color: None, views: &[view] }], &mut [first]);
+    });
+    assert!(message.contains("draw_managers に渡されていません"), "{message}");
+
+    let message = misuse_message(|scene, first, _| {
+        scene.gpu.begin_frame();
+        let views = [DrawView::new(first), DrawView::new(first)];
+        let _ = scene.gpu.end_frame(&mut scene.resources, &[SurfaceDraw { surface: scene.surface, clear_color: None, views: &views }], &mut [first]);
+    });
+    assert!(message.contains("同じ DrawManager の DrawView が 2 つ以上"), "{message}");
+
+    let message = misuse_message(|scene, first, _| {
+        let removed = first.add_camera(camera_at(0.0));
+        let view: DrawView = first.view().camera(removed, camera_at(1.0)).into();
+        first.remove_camera(removed);
+        scene.gpu.begin_frame();
+        let _ = scene.gpu.end_frame(&mut scene.resources, &[SurfaceDraw { surface: scene.surface, clear_color: None, views: &[view] }], &mut [first]);
+    });
+    assert!(message.contains("削除済みの CameraId"), "{message}");
+
+    let message = misuse_message(|_, first, second| {
+        let _ = first.view().camera(second.default_camera_id(), camera_at(0.0));
+    });
+    assert!(message.contains("別の DrawManager の CameraId"), "{message}");
+
+    let message = misuse_message(|_, first, _| {
+        let id = first.default_camera_id();
+        let _ = first.view().camera(id, camera_at(0.0)).camera(id, camera_at(1.0));
+    });
+    assert!(message.contains("2 回差し替えられました"), "{message}");
 }

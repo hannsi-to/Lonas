@@ -43,9 +43,9 @@ object.vertex(Vertex::new_position_color(100.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0));
 object.vertex(Vertex::new_position_color(0.0, 100.0, 0.0, 1.0, 1.0, 1.0, 1.0));
 object.end(&mut draw_manager);
 
-gpu.end_frame(&mut resources, &mut [
-    SurfaceDraw { surface, clear_color: Some(Color::BLACK), draw_managers: &mut [&mut draw_manager] },
-])?;
+gpu.end_frame(&mut resources, &[
+    SurfaceDraw { surface, clear_color: Some(Color::BLACK), views: &[DrawView::new(&draw_manager)] },
+], &mut [&mut draw_manager])?;
 ```
 
 `end_frame` は、ドライバーのリセットなどで GPU のデバイスが失われると `Err(LonasError::DeviceLost)` を返します。Lonas の中では復旧しないので、`GpuContext` などをすべて作り直してください（DESIGN.md §12）。

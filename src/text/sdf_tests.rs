@@ -48,6 +48,7 @@ mod with_feature {
     use crate::config::tests::sample_config;
     use crate::config::{Blend, CullMode};
     use crate::draw::{Camera2D, DrawManager2D};
+    use crate::draw::DrawView;
     use crate::gpu::{GpuContext, SurfaceDraw};
     use crate::instance::Instance2D;
     use crate::math::{Vector2f, Vector3f};
@@ -173,7 +174,7 @@ mod with_feature {
                     method,
                 });
                 object.end(&mut manager);
-                gpu.end_frame(&mut resources, &mut [SurfaceDraw { surface, clear_color: Some(Color::BLACK), draw_managers: &mut [&mut manager] }])
+                gpu.end_frame(&mut resources, &[SurfaceDraw { surface, clear_color: Some(Color::BLACK), views: &[DrawView::new(&manager)] }], &mut [&mut manager])
                     .unwrap();
 
                 // 「l」の縦線の真ん中あたりの 1 行

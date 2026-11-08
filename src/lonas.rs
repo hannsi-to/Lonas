@@ -5,7 +5,7 @@ pub use crate::config::{
     AlphaMode, AntiAliasing, Backend, BindingConfig, BindingSlot, Blend, CoordinateSystemConfig, CullMode, FilterMode, Handedness,
     LonasConfig, MemoryCapacity, MemoryConfig, MotionVectorFormat, Origin2D, PresentMode, GlyphAtlasConfig, TaaConfig, TextureAtlasConfig,
 };
-pub use crate::draw::{Camera2D, Camera3D, CameraId, DrawManager2D, DrawManager3D, ProjectionMode};
+pub use crate::draw::{Camera2D, Camera3D, CameraId, DrawManager2D, DrawManager3D, DrawView, DrawViewBuilder, ProjectionMode, ViewCameraType};
 pub use crate::error::LonasError;
 pub use crate::gpu::{DrawManager, GpuContext, SurfaceDraw, SurfaceId};
 pub use crate::instance::{Instance2D, Instance3D, Visibility};

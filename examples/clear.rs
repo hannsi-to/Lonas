@@ -54,11 +54,11 @@ impl ApplicationHandler for App {
                 let color = Color::rgb(0.5 + 0.5 * t.sin(), 0.5 + 0.5 * (t * 1.3).sin(), 0.5 + 0.5 * (t * 1.7).sin());
 
                 state.gpu.begin_frame();
-                state.gpu.end_frame(&mut state.resource_manager, &mut [SurfaceDraw {
+                state.gpu.end_frame(&mut state.resource_manager, &[SurfaceDraw {
                     surface: state.surface,
                     clear_color: Some(color),
-                    draw_managers: &mut [],
-                }])
+                    views: &[],
+                }], &mut [])
                 .expect("GPU のデバイスが失われました"); // 作り直す例は test1.rs（§12 デバイスの喪失）
 
                 state.frame += 1;

@@ -7,6 +7,7 @@ use crate::config::LonasConfig;
 use crate::config::tests::sample_config;
 use crate::draw::{Camera2D, Camera3D, HeapRequest, SpaceKind};
 use crate::vertex::{Vertex, VertexLayout};
+use crate::draw::DrawView;
 use crate::gpu::{SurfaceDraw, SurfaceId, heap::Heap};
 use crate::math::Quaternion;
 use crate::resource::{ResourceConfig, ResourceManager};
@@ -47,7 +48,7 @@ fn camera_3d() -> Camera3D {
 
 fn end_frame(gpu: &mut GpuContext, resources: &mut ResourceManager, manager: &mut DrawManager2D) {
     let surface = surface(gpu);
-    gpu.end_frame(resources, &mut [SurfaceDraw { surface, clear_color: None, draw_managers: &mut [manager] }]).unwrap();
+    gpu.end_frame(resources, &[SurfaceDraw { surface, clear_color: None, views: &[DrawView::new(&*manager)] }], &mut [manager]).unwrap();
 }
 
 fn triangle(object: &mut Object2D, x: f32) {
@@ -785,7 +786,7 @@ fn draw_commands_are_cleared_when_device_is_lost() {
         assert_eq!(manager.core.draw_commands.len(), 1);
 
         let surface = surface(&gpu);
-        let result = gpu.end_frame(&mut resources, &mut [SurfaceDraw { surface, clear_color: None, draw_managers: &mut [&mut manager] }]);
+        let result = gpu.end_frame(&mut resources, &[SurfaceDraw { surface, clear_color: None, views: &[DrawView::new(&manager)] }], &mut [&mut manager]);
         assert!(matches!(result, Err(crate::error::LonasError::DeviceLost { .. })));
         assert!(manager.core.draw_commands.is_empty());
     }
@@ -899,7 +900,7 @@ fn draw_manager_3d_accepts_object_3d() {
     assert_eq!(object.core.index_values().len(), 6);
     assert_eq!(manager.core.draw_commands[0].instance_count, 1);
     let surface = surface(&gpu);
-    gpu.end_frame(&mut resources, &mut [SurfaceDraw { surface, clear_color: None, draw_managers: &mut [&mut manager] }]).unwrap();
+    gpu.end_frame(&mut resources, &[SurfaceDraw { surface, clear_color: None, views: &[DrawView::new(&manager)] }], &mut [&mut manager]).unwrap();
 
     object.remove_instance(id);
     gpu.begin_frame();

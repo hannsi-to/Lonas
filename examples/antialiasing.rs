@@ -8,7 +8,7 @@ mod common;
 
 use lonas::lonas::{
     AntiAliasing, Camera3D, Color, CullMode, DrawManager3D, GpuContext, Instance3D, InstanceId, Matrix4f, MemoryUpdateType,
-    Object3D, ProjectionMode, Quaternion, ResourceManager, SurfaceDraw, SurfaceId, PaintType, Vector3f, Vertex, VertexLayout, wgsl,
+    Object3D, ProjectionMode, Quaternion, ResourceManager, DrawView, SurfaceDraw, SurfaceId, PaintType, Vector3f, Vertex, VertexLayout, wgsl,
 };
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
@@ -133,11 +133,11 @@ impl State {
 
         self.blades.end(&mut self.manager);
 
-        self.gpu.end_frame(&mut self.resources, &mut [SurfaceDraw {
+        self.gpu.end_frame(&mut self.resources, &[SurfaceDraw {
             surface: self.surface,
             clear_color: Some(Color::rgb(0.05, 0.05, 0.07)),
-            draw_managers: &mut [&mut self.manager],
-        }])
+            views: &[DrawView::new(&self.manager)],
+        }], &mut [&mut self.manager])
         .expect("GPU のデバイスが失われました"); // 作り直す例は test1.rs（§12 デバイスの喪失）
     }
 }

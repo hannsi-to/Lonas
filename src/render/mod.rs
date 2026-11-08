@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::config::{BindingConfig, BindingSlot, LonasConfig};
 use crate::draw::{CameraFrame, Dimension, DrawManagerCore, HeapRequest, SpaceKind};
+use crate::gpu::SurfaceId;
 use crate::gpu::heap::Heap;
 use crate::memory::ManagerId;
 use crate::resource::shader::BindingKind;
@@ -62,6 +63,8 @@ pub(crate) struct Renderer {
 pub(crate) struct PreparedDraw {
     plan: FramePlan,
     layout_space: SpaceKind,
+    // 描くサーフェス。DrawManager* のサーフェスごとのバッファを引く
+    surface: SurfaceId,
     // シェーダーごとのバインドグループ（uniform の配列がシェーダーごとのため）
     user_bind_groups: HashMap<ShaderId, Vec<wgpu::BindGroup>>,
 }
@@ -152,6 +155,7 @@ impl Renderer {
         heap: &Heap,
         resources: &ResourceManager,
         manager: &mut DrawManagerCore,
+        surface: SurfaceId,
         cameras: &[Option<CameraFrame>],
         camera_slots: &[u32],
         target: TargetFormat,
@@ -175,8 +179,6 @@ impl Renderer {
                 }
             }
         }
-
-        self.write_uniforms(device, encoder, manager);
 
         for command in &manager.draw_commands {
             if let Some(texture) = command.settings.texture {
@@ -208,7 +210,9 @@ impl Renderer {
             Dimension::Three => SpaceKind::Instance3D,
         };
         let instance_buffer = heap.buffer(instance_space).expect("インスタンスのヒープがありません");
-        let resources = manager.resources.get_or_insert_with(|| DrawResources::new(device));
+        let manager_id = manager.id;
+        let layout_space = SpaceKind::Vertex(manager.layout);
+        let resources = manager.surface_resources(device, surface, frame);
 
         frame::record_compute(device, queue, encoder, &self.culling, resources, &plan, cameras, instance_buffer, dimension, &self.strides);
 
@@ -217,7 +221,6 @@ impl Renderer {
             resources.last_batches = plan.batches.iter().map(|batch| (batch.args_start, batch.args_count)).collect();
         }
 
-        let manager_id = manager.id;
         let mut user_bind_groups = HashMap::new();
 
         for batch in &plan.batches {
@@ -226,12 +229,12 @@ impl Renderer {
                 .or_insert_with(|| self.user_bind_groups(device, resources, heap, instance_space, manager_id, batch.key.shader));
         }
 
-        Some(PreparedDraw { plan, layout_space: SpaceKind::Vertex(manager.layout), user_bind_groups })
+        Some(PreparedDraw { plan, layout_space, surface, user_bind_groups })
     }
 
     // 準備した描画を、描画のパスに記録する（end_frame の 6）
     pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, heap: &Heap, manager: &DrawManagerCore, prepared: &PreparedDraw) {
-        let resources = manager.resources.as_ref().expect("描画のバッファがありません");
+        let resources = &manager.resources.get(&prepared.surface).expect("描画のバッファがありません").0;
         let (Some(vertices), Some(indices)) = (heap.buffer(prepared.layout_space), heap.buffer(SpaceKind::Index)) else { return };
 
         pass.set_vertex_buffer(0, vertices.slice(..));
@@ -280,7 +283,7 @@ impl Renderer {
 
     // uniform の値を、DrawManager* × シェーダーのバッファの要素へコピーする（§6 uniform の領域）
     // 要素が足りなければ、より大きなバッファを作り、既存の内容をコピーして差し替える（別のバッファ同士のためコピーは 1 回）
-    fn write_uniforms(&mut self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, manager: &DrawManagerCore) {
+    pub(crate) fn write_uniforms(&mut self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, manager: &DrawManagerCore) {
         for request in &manager.heap_requests {
             let HeapRequest::WriteUniform { shader, slot, chunk, ref range } = *request else { continue };
             let entry = self.shaders.get(&shader).expect("登録されていないシェーダーの uniform です");

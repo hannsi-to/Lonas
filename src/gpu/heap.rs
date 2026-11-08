@@ -31,6 +31,9 @@ pub(crate) struct Heap {
     compaction_threshold: f32,
     // 前のフレームのインスタンス（TAA の動きのベクトル用、§2 end 時の更新条件）
     previous: HashMap<SpaceKind, wgpu::Buffer>,
+    // テストで、ヒープへのコピー（Write）の数を数える。同じ DrawManager* を複数のサーフェスに描いても 1 回ずつか
+    #[cfg(test)]
+    pub(crate) copied_writes: u64,
 }
 
 impl Heap {
@@ -47,6 +50,8 @@ impl Heap {
             temporary: None,
             compaction_threshold: config.static_compaction_threshold,
             previous: HashMap::new(),
+            #[cfg(test)]
+            copied_writes: 0,
         }
     }
 
@@ -146,6 +151,11 @@ impl Heap {
         for manager in managers.iter() {
             for request in &manager.heap_requests {
                 if let HeapRequest::Write { handle, space, offset, chunk, ref range } = *request {
+                    #[cfg(test)]
+                    {
+                        self.copied_writes += 1;
+                    }
+
                     let space = &self.spaces[&space];
                     let destination = (space.memory.offset(handle) + offset) * space.unit;
 

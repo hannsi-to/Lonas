@@ -7,7 +7,7 @@ mod common;
 
 use lonas::lonas::{
     Camera2D, Camera3D, Color, CullMode, DrawManager2D, DrawManager3D, GpuContext, Instance2D, Instance3D, InstanceId,
-    Matrix4f, MemoryUpdateType, Object2D, Object3D, ProjectionMode, Quaternion, ResourceManager, SurfaceDraw, SurfaceId,
+    Matrix4f, MemoryUpdateType, Object2D, Object3D, ProjectionMode, Quaternion, ResourceManager, DrawView, SurfaceDraw, SurfaceId,
     PaintType, Vector2f, Vector3f, Vertex, VertexLayout, wgsl,
 };
 use winit::application::ApplicationHandler;
@@ -176,11 +176,11 @@ impl State {
         self.triangle_2d.end(&mut self.manager_2d);
 
         // 3D の上に 2D を重ねる（§9）
-        self.gpu.end_frame(&mut self.resources, &mut [SurfaceDraw {
+        self.gpu.end_frame(&mut self.resources, &[SurfaceDraw {
             surface: self.surface,
             clear_color: Some(Color::rgb(0.1, 0.1, 0.12)),
-            draw_managers: &mut [&mut self.manager_3d, &mut self.manager_2d],
-        }])
+            views: &[DrawView::new(&self.manager_3d), DrawView::new(&self.manager_2d)],
+        }], &mut [&mut self.manager_3d, &mut self.manager_2d])
         .expect("GPU のデバイスが失われました"); // 作り直す例は test1.rs（§12 デバイスの喪失）
     }
 }

@@ -35,9 +35,9 @@ object.index(1);
 object.index(2);
 object.end(&mut draw_manager_2d);
 
-gpu.end_frame(&mut resource_manager, &mut [
-    SurfaceDraw { surface: main_surface, clear_color: Some(color), draw_managers: &mut [&mut draw_manager_3d, &mut draw_manager_2d] },
-])?; // デバイスが失われたら Err（§12 デバイスの喪失）
+gpu.end_frame(&mut resource_manager, &[
+    SurfaceDraw { surface: main_surface, clear_color: Some(color), views: &[DrawView::new(&draw_manager_3d), DrawView::new(&draw_manager_2d)] },
+], &mut [&mut draw_manager_3d, &mut draw_manager_2d])?; // デバイスが失われたら Err（§12 デバイスの喪失）
 ```
 
 **高頻度ではないが、描画中でも呼ばれる関数群**
@@ -664,7 +664,7 @@ struct Block {
 
 ### DrawManager 経由のアクセス
 
-`gpu.end_frame(&mut [&mut dm])` で `GpuContext` を可変借用するため、`DrawManager*` が `&mut GpuContext` を保持し続けることはできない。
+`gpu.end_frame(..., &mut [&mut dm])` で `GpuContext` を可変借用するため、`DrawManager*` が `&mut GpuContext` を保持し続けることはできない。
 そこで `Object*::end` は確保・転送・解放を **要求として `DrawManager*` に積み**、`GpuContext::end_frame` でまとめて実行する。
 
 ```
@@ -896,13 +896,19 @@ impl GpuContext {
     pub fn surface_size(&self, surface: SurfaceId) -> Vector2f; // resize で通知された大きさ（ピクセル）
     pub fn begin_frame(&mut self);
     // デバイスが失われたら Err(DeviceLost)（§12 デバイスの喪失）
-    pub fn end_frame(&mut self, resource_manager: &mut ResourceManager, surfaces: &mut [SurfaceDraw<'_, '_>]) -> Result<(), LonasError>;
+    // draw_managers には、そのフレームで使う DrawManager* を 1 回ずつ渡す。surfaces はそれを DrawView で指す（§11 複数ウィンドウ）
+    pub fn end_frame(
+        &mut self,
+        resource_manager: &mut ResourceManager,
+        surfaces: &[SurfaceDraw<'_>],
+        draw_managers: &mut [&mut dyn DrawManager],
+    ) -> Result<(), LonasError>;
 }
 
-pub struct SurfaceDraw<'a, 'b> {
+pub struct SurfaceDraw<'a> {
     pub surface: SurfaceId,
     pub clear_color: Option<Color>, // None ならクリアしない（§10）
-    pub draw_managers: &'a mut [&'b mut dyn DrawManager], // 渡した順に描画する
+    pub views: &'a [DrawView],      // 渡した順に描画する（§11 同じ DrawManager* を複数のサーフェスに描く）
 }
 ```
 
@@ -912,17 +918,19 @@ gpu.begin_frame();
 object_3d.end(&mut draw_manager_3d);
 object_ui.end(&mut draw_manager_2d);
 
-// サーフェスごとに、渡した順に描画する（3D → 2D）
-gpu.end_frame(&mut resource_manager, &mut [
-    SurfaceDraw { surface: main_surface, clear_color: Some(color), draw_managers: &mut [&mut draw_manager_3d, &mut draw_manager_2d] },
-])?; // デバイスが失われたら Err（§12 デバイスの喪失）
+// サーフェスごとに、views を渡した順に描画する（3D → 2D）
+gpu.end_frame(&mut resource_manager, &[
+    SurfaceDraw { surface: main_surface, clear_color: Some(color), views: &[DrawView::new(&draw_manager_3d), DrawView::new(&draw_manager_2d)] },
+], &mut [&mut draw_manager_3d, &mut draw_manager_2d])?; // デバイスが失われたら Err（§12 デバイスの喪失）
 ```
 
 - **決定：`new` / `add_surface` は、ウィンドウの最初の大きさ（ピクセル）を受け取る。**`raw-window-handle` からは大きさが分からず、サーフェスの設定に必要なため。以降の変化は `resize` で知らせる（段階 4 で決定）
 - **決定：ウィンドウは `Send + Sync + 'static` の値として所有権ごと受け取る。**wgpu のサーフェスはウィンドウより長く生きてはならないため、`GpuContext` が持ち続ける（winit なら `Arc<Window>` を複製して渡す）（段階 4 で決定）
   - OpenGL のバックエンドで、表示（ディスプレイ）の情報が要る環境には未対応。必要になったら `new` で表示の情報も受け取る
 - `DrawManager` は `DrawManager2D` / `DrawManager3D` が実装するトレイト。`end_frame` に 2D / 3D を混ぜて渡すために使う
-- 配列の借用（`'a`）と各 `DrawManager*` の借用（`'b`）の寿命を分ける。同じ寿命にすると、Rust の可変参照の性質（寿命を縮められない）により、`DrawManager*` の借用が必要以上に長く続くことがある
+- **決定：`DrawManager*` は `draw_managers` に 1 回ずつ渡し、`SurfaceDraw` は借用を持たない `DrawView` でそれを指す。**同じ `DrawManager*` を複数のサーフェスに描けるようにするため（§11 同じ DrawManager* を複数のサーフェスに描く）
+  - `surfaces` を `draw_managers` より前の引数にする。`DrawView` は値なので、引数の中で `dm.view()` を呼んでから、次の引数で `&mut dm` を作れる
+  - 却下案（以前の形）：`SurfaceDraw { draw_managers: &mut [&mut dyn DrawManager] }`（同じ `DrawManager*` を 2 つのサーフェスに渡すと `&mut` が 2 つになり、コンパイルエラーになる）
 
 | 関数 | 処理 |
 |---|---|
@@ -938,9 +946,9 @@ gpu.end_frame(&mut resource_manager, &mut [
    2. `HeapRequest` を処理する：確保・確保し直し（必要なら Dynamic 領域の拡張）→ Static 領域のコンパクション（しきい値を超えた場合、§6）。解放は要求ではなく、8 の後片付けで行う
    3. TAA のサーフェスがあれば、インスタンスのメモリ空間の現在の値を、まるごと前のフレーム用のバッファへコピーする（§2）。TAA のサーフェスがなければ前のフレーム用のバッファを捨てる
    4. staging バッファからヒープへコピーする（`copy_buffer_to_buffer`、§6 転送）
-4. **カメラ**：各 `DrawManager*` のカメラの行列を計算して転送する（TAA のジッターを含む、§11 Camera）
-5. **Compute**：uniform のバッファを作る・大きくして値を書き込む（§6 uniform の領域）。視界の外・非表示のインスタンスを省き、並べ替え、インスタンス番号のリストと描画の引数を書き込む（§10）
-6. **描画**（渡されたサーフェスごと）：描画先の取得（取得できなければ飛ばす、§9 リサイズとフレームスキップ）→ 大きさ・方式が変わっていれば深度バッファなどの描画先を作り直す → `DrawManager*` ごとに RenderPass で実行 → アンチエイリアスの後処理（resolve / FXAA / TAA、§11）
+4. **uniform**（`DrawManager*` ごとに 1 回）：uniform のバッファを作る・大きくして値を書き込む（§6 uniform の領域）
+5. **カメラと Compute**（`DrawView` ごと。つまりサーフェス × `DrawManager*` ごと）：`DrawView` で差し替えたカメラと切り取り（§11）、そのサーフェスの大きさから行列を計算して転送する（TAA のジッターを含む、§11 Camera）。視界の外・非表示のインスタンスを省き、並べ替え、インスタンス番号のリストと描画の引数を書き込む（§10）
+6. **描画**（渡されたサーフェスごと）：描画先の取得（取得できなければ飛ばす、§9 リサイズとフレームスキップ）→ 大きさ・方式が変わっていれば深度バッファなどの描画先を作り直す → `DrawView` ごとに RenderPass で実行 → アンチエイリアスの後処理（resolve / FXAA / TAA、§11）
 7. **送信**：`submit` を 1 回行い、各サーフェスを `present` する
 8. **後片付け**：各 `DrawManager*` のコマンドと要求をクリアする。使った staging バッファのチャンクを `map_async` で map し直す。GC で期限切れの領域を回収し、回収したハンドルを `DrawManager*` ごとに溜める（§6 回収の通知）。渡された `DrawManager*` に溜まった回収済みのハンドルを渡し、捨てられた `Object*` の領域を解放する（§6 解放：Drop の知らせ）。使われなくなったパイプラインを捨てる（§10）
 
@@ -952,7 +960,7 @@ gpu.end_frame(&mut resource_manager, &mut [
 | `ResourceManager` | `ShaderId` / `TextureId` の発行、WGSL の検査、画像の読み込み。GPU にはアクセスしない（§11） |
 | `DrawManager2D` / `DrawManager3D` | 2D / 3D 固有の DrawCall、カメラ（`CameraId`）、そのフレームに積まれた描画コマンドとヒープへの要求 |
 
-- `DrawManager*` 間の描画順は `end_frame` に渡す配列の順で決まる。ライブラリ側で 3D / 2D の順を固定しないため、2D の背景 → 3D → 2D の UI のような構成もできる
+- `DrawManager*` 間の描画順は、各サーフェスの `views` の順で決まる（`draw_managers` の順は描画に関係しない）。ライブラリ側で 3D / 2D の順を固定しないため、2D の背景 → 3D → 2D の UI のような構成もできる
 - コマンドのクリアは `end_frame` で実行した直後に行う。`begin_frame` は `DrawManager*` を受け取らない
 
 ### 決定：リサイズとフレームスキップ
@@ -982,13 +990,18 @@ gpu.end_frame(&mut resource_manager, &mut [
 | `uniform()` に渡した型の大きさがシェーダーの uniform の要素と違う、またはシェーダーに uniform の配列がない | `end_frame` で panic（§11 uniform） |
 | 別の `ResourceManager` の `ShaderId` / `TextureId` を使う、または `Object*` の ID と別の `ResourceManager` を `end_frame` に渡す | `end_frame` で panic（§11） |
 | 同じサーフェスを `end_frame` の `SurfaceDraw` に 2 回以上渡す | `end_frame` で panic（§11 複数ウィンドウ） |
+| 同じ `DrawManager*` を `draw_managers` に 2 回以上渡す | `&mut` が 2 つになるため **コンパイルエラー**。念のため `end_frame` でも確かめて panic（§11 同じ DrawManager* を複数のサーフェスに描く） |
+| 1 つのサーフェスの `views` に、同じ `DrawManager*` の `DrawView` が 2 つ以上ある | `end_frame` で panic（同上） |
+| `DrawView` が指す `DrawManager*` が `draw_managers` にない | `end_frame` で panic（同上） |
+| `DrawView` で差し替えた `CameraId` が削除済み | `end_frame` で panic（同上） |
+| `DrawView` に、別の `DrawManager*` の `CameraId` を渡す / 同じ `CameraId` を 2 回差し替える | `DrawViewBuilder::camera` で panic（同上） |
 | 別の `GpuContext` の、または取り除いた `SurfaceId` を渡す | その関数（`end_frame` を含む）で panic（§11 複数ウィンドウ） |
 | 存在しない `SurfaceId` を `resize` / `set_present_mode` / `set_anti_aliasing` / `end_frame` などに渡す | その関数で panic |
 | `index()` も `paint_type()` も呼ばずに `end` | `Object*::end` で panic（§10） |
-| `DrawManager*` に積んだのに `end_frame` に渡さなかった | 次のフレームでその `DrawManager*` に `Object*::end` が呼ばれた時点で panic（前のフレームのコマンドが残っている） |
+| `DrawManager*` に積んだのに `end_frame` の `draw_managers` に渡さなかった | 次のフレームでその `DrawManager*` に `Object*::end` が呼ばれた時点で panic（前のフレームのコマンドが残っている） |
 
 - フレームの状態は `GpuContext` と各 `DrawManager*`・各 `Object*` で共有する **フレーム番号**（`Arc<AtomicU64>`）で判定する。フレーム中かどうかも同じ値に入れる（例：最下位ビット）。フレーム中かどうかに加え、`DrawManager*` に残っているコマンドがどのフレームのものかも分かる。`DrawManager*` が `GpuContext` を借用し続けずに済む
-- 表示したくない `DrawManager*` は、その `Object*` の `end` を呼ばなければよい（コマンドが積まれないので panic しない）
+- 表示したくない `DrawManager*` は、その `Object*` の `end` を呼ばなければよい（コマンドが積まれないので panic しない）。`draw_managers` に渡して、どの `views` にも入れなくてもよい（転送と後片付けだけを行い、描かない）
 
 ---
 
@@ -1316,6 +1329,7 @@ end_frame（2D の DrawManager）
 #### 段階 6 で決めた描画の細部
 
 - **`DrawManager*` ごとに描画のパスを分ける。**3D の `DrawManager3D` は自分のパスの最初に深度をクリアする（§10 深度バッファとクリア）。画面の色のクリアは、そのサーフェスの最初のパスだけ
+  - 同じ `DrawManager*` を複数のサーフェスに描く場合も、サーフェスごとに 1 つのパス（`DrawView` ごと、§11 同じ DrawManager* を複数のサーフェスに描く）
 - **ユーザーのシェーダーは、頂点とフラグメントのエントリーポイントを 1 つずつ持つ。**パイプラインはエントリーポイントの名前を指定せずに作る（wgpu が 1 つだけあるものを使う）
 - **`shader()` を呼んでいない `Object*` は描かない。**`Object*` ごとに 1 回だけ `log` で警告する
 - インスタンスの視界の判定は、カメラの行列から求めた 6 つの平面と境界の球で行う。2D も同じ処理（z は 0）
@@ -1470,7 +1484,7 @@ impl DrawManager3D {
   - `end_frame` で各 `DrawManager*` のカメラごとに 1 フレーム 1 回計算して GPU に送る（§9）。TAA のずらし（ジッター）もここで加える
   - ユーザーが行列を必要とする場合（マウス位置からの逆変換など）は `view_projection()` で取得する。ジッターは含まない
   - 項目と行列が食い違う状態が起きない
-- **決定：カメラは描く大きさ（`viewport_size`）と縦横比（`aspect_ratio`）を持たない。`end_frame` で、そのカメラを描くサーフェスの大きさから求める。**
+- **決定：カメラは描く大きさ（`viewport_size`）と縦横比（`aspect_ratio`）を持たない。`end_frame` で、そのカメラを描くサーフェスの大きさから求める。**`DrawView::crop` で切り取る場合は、切り取る前の全体の大きさから求める（§11 同じ DrawManager* を複数のサーフェスに描く）
   - 同じ `DrawManager*` でもフレームによって描くサーフェスが変わり得るため、大きさはカメラではなくサーフェスの値として扱う
   - ユーザーはリサイズのときに `gpu.resize` だけを呼べばよい
   - `view_projection()` は描く大きさを引数に取る。`gpu.surface_size(surface)` で取得した値を渡す
@@ -2087,10 +2101,10 @@ let sub_surface: SurfaceId = gpu.add_surface(other_window, width, height)?;
 
 gpu.begin_frame();
 // 各 Object* の end ...
-gpu.end_frame(&mut resource_manager, &mut [
-    SurfaceDraw { surface: main_surface, clear_color: Some(color), draw_managers: &mut [&mut dm_3d, &mut dm_2d] },
-    SurfaceDraw { surface: sub_surface,  clear_color: None,        draw_managers: &mut [&mut dm_ui] },
-])?;
+gpu.end_frame(&mut resource_manager, &[
+    SurfaceDraw { surface: main_surface, clear_color: Some(color), views: &[DrawView::new(&dm_3d), DrawView::new(&dm_2d)] },
+    SurfaceDraw { surface: sub_surface,  clear_color: None,        views: &[DrawView::new(&dm_ui)] },
+], &mut [&mut dm_3d, &mut dm_2d, &mut dm_ui])?;
 
 gpu.resize(main_surface, width, height);
 gpu.set_anti_aliasing(main_surface, AntiAliasing::Msaa { sample_count: 4 })?;
@@ -2101,8 +2115,8 @@ gpu.set_anti_aliasing(main_surface, AntiAliasing::Msaa { sample_count: 4 })?;
 - 画面の色のクリアは `SurfaceDraw::clear_color` でサーフェスごとに指定する（`None` ならクリアしない）
 - 却下案：サーフェスごとに `begin_frame` / `end_frame` を呼ぶ形（ウィンドウの数だけ転送・GC の数え方・`submit` が増える）
 
-- **決定：同じサーフェスを `end_frame` に 2 回以上渡した場合は panic。**1 つのサーフェスに複数の `DrawManager*` を描く場合は、1 つの `SurfaceDraw` の `draw_managers` に並べる
-- 同じ `DrawManager*` を複数のサーフェスに渡すことは、`&mut` を同時に 2 つ作れないため **コンパイルエラー** になる
+- **決定：同じサーフェスを `end_frame` に 2 回以上渡した場合は panic。**1 つのサーフェスに複数の `DrawManager*` を描く場合は、1 つの `SurfaceDraw` の `views` に並べる
+- 同じ `DrawManager*` を複数のサーフェスに描ける（下記）
 - ヒープ（§6）・`ResourceManager`・パイプラインはサーフェス間で共有する
 - 描画先の取得・`present`・深度バッファはサーフェスごと
 
@@ -2113,6 +2127,67 @@ gpu.set_anti_aliasing(main_surface, AntiAliasing::Msaa { sample_count: 4 })?;
 - フレーム中に呼んでもよい。そのフレームの `end_frame` に、取り除いた `SurfaceId` を渡さなければよい
 - 最初のサーフェスを取り除いても、`GpuContext` はそのまま使える。ただしアダプターは最初のサーフェスに合わせて選んでいるため、後から足すサーフェスが別の GPU につながったウィンドウだと `add_surface` が `Err` になることがある
 - テスト用のウィンドウなしの描画先も同じ表に入れ、本番と同じ検査を通す（テストのときだけ存在しない `SurfaceId` を飛ばす、という分岐は持たない）
+
+### 同じ DrawManager* を複数のサーフェスに描く
+
+**決定：1 つの `DrawManager*` を、1 フレームで複数のサーフェスに描ける。図形を作る処理（`Object*` の `begin` 〜 `end`）とヒープへの転送は 1 回だけ行い、サーフェスごとにカメラ（と切り取り）だけを差し替えて描く。**
+
+例：モニタごとに窓（サーフェス）があり、全モニタ共通の座標で置いた同じ図形を、モニタごとの視点と倍率で映す。
+
+```rust
+pub struct DrawView { /* 非公開。借用を持たない値（Clone） */ }
+
+impl DrawView {
+    // カメラを差し替えない
+    pub fn new(manager: &(impl DrawManager + ?Sized)) -> Self;
+}
+
+impl DrawManager2D { // DrawManager3D も同じ（DrawViewBuilder<Camera3D> を返す）
+    pub fn view(&self) -> DrawViewBuilder<Camera2D>;
+    // DrawView を通したときの行列（差し替えと切り取りを含む。ジッターは含まない）。マウス位置の逆変換など
+    pub fn view_projection_in(&self, view: &DrawView, id: CameraId, viewport_size: Vector2f) -> Matrix4f;
+}
+
+impl<C> DrawViewBuilder<C> { // C は Camera2D か Camera3D。2D と 3D の取り違えはコンパイルエラー
+    // そのサーフェスでは、id のカメラの代わりに camera を使う
+    pub fn camera(self, id: CameraId, camera: C) -> Self;
+    // 大きさ full_size の全体のうち、offset から size の範囲だけをこのサーフェスに映す
+    pub fn crop(self, full_size: Vector2f, offset: Vector2f, size: Vector2f) -> Self;
+}
+
+impl<C> From<DrawViewBuilder<C>> for DrawView;
+```
+
+```rust
+gpu.end_frame(&mut resource_manager, &[
+    SurfaceDraw { surface: monitor_0, clear_color: None, views: &[scene.view().camera(id, camera_0).into()] },
+    SurfaceDraw { surface: monitor_1, clear_color: None, views: &[scene.view().camera(id, camera_1).into()] },
+], &mut [&mut scene])?;
+```
+
+- **カメラの差し替え**：`DrawView` で差し替えた `CameraId` は、そのサーフェスでは渡した値のカメラで描く。**差し替えなかった `CameraId` は、`DrawManager*` が持つカメラをそのまま使う**
+  - カメラの値は `DrawView` が持つ。`DrawManager*` のカメラは変わらない
+  - 別の `DrawManager*` の `CameraId` を渡す、同じ `CameraId` を 2 回差し替える → `camera` で panic。削除済みの `CameraId` → `end_frame` で panic
+  - 却下案：`DrawManager*` にサーフェスの数だけカメラを足し、`DrawView` で `CameraId` を付け替える（サーフェスが増減するたびに `add_camera` / `remove_camera` を合わせる必要がある）
+  - 却下案：`SurfaceDraw` が `&dyn DrawManager`（共有参照）を持ち、`DrawManager*` の中を RefCell で変える（`&` で受け取ったものを書き換えることになり、同じ `DrawManager*` を 1 回にまとめる処理も要る）
+- **切り取り（`crop`）**：大きさ `full_size` の仮想の画面を考え、その中の `offset` 〜 `offset + size` の範囲（左上が原点。単位は `full_size` と同じ）をサーフェス全体に広げて映す
+  - 投影行列は `full_size` の縦横比で作り、その後で拡大と平行移動を掛けて範囲を切り出す（中心をずらした視錐台と同じ）。2D / 3D、透視投影 / 正射影のどれにも同じ形で効く
+  - 視界の判定（§10）も切り取った後の行列で行うため、範囲の外のインスタンスは省かれる
+  - TAA のジッターは、切り取った後にサーフェスのピクセル単位で加える
+  - 2D の `full_size` はピクセル（`zoom = 1.0` で 1 単位が 1 ピクセル、§11 座標系）。範囲の大きさ `size` とサーフェスの大きさが違えば、その比で拡大・縮小して映る
+  - 指定しなければ切り取らない（`full_size` = サーフェスの大きさ、範囲 = 全体）
+- **1 回だけ行うもの**（`DrawManager*` ごと）：`Object*` の `end`、ヒープの処理と転送、uniform の転送、後片付け（§9 の 1〜4・8）
+- **`DrawView` ごとに行うもの**：カメラの行列の計算と転送、視界の判定・並べ替え・インスタンス番号のリスト・描画の引数（§10）、描画のパス
+  - そのためのバッファ（カメラ・引数・インスタンス番号のリストなど）は `DrawManager*` が **サーフェスごとに** 持つ。`gc_unused_frames`（§3）のフレーム数だけそのサーフェスに描かなければ捨てる（サーフェスを取り除いた場合もこれで消える）
+- **決定：1 つのサーフェスの `views` に、同じ `DrawManager*` の `DrawView` を 2 つ以上入れたら `end_frame` で panic。**同じサーフェスに 2 つの視点で重ねたい場合は、別の `DrawManager*` を使う
+- `DrawView` が指す `DrawManager*` が `draw_managers` にない → `end_frame` で panic（GPU の処理を始める前に確かめる）。`draw_managers` に同じ `DrawManager*` を 2 回渡すのは、`&mut` が 2 つになるためコンパイルエラー
+- TAA：
+  - ジッターはフレームの番号だけで決まるため、どのサーフェスでも同じ
+  - 前のフレームのカメラ（§11 シェーダーとの約束事の `previous_camera`）は、`DrawManager*` × サーフェスごとに残す。サーフェスごとに前のフレームと比べるため
+  - 前のフレームのインスタンスはヒープ全体のコピー（§2）なので、1 回で済む
+- 深度バッファはサーフェスごと（§11 深度バッファ）で、`DrawManager3D` のパスごとにクリアするため、影響はない
+- 描画順：サーフェスの中では `views` の順。`DrawManager*` の中の順（§10 描画順）はどのサーフェスでも同じ。パイプラインはサーフェスの構成（MSAA など）でキーが変わるため、描く順の計画はサーフェスごとに作る
+- `DrawManager*` の `view_projection(id, viewport_size)` は差し替えと切り取りを含まない。含めた行列は `view_projection_in(&view, id, viewport_size)` で求める
 
 ### スレッド
 
@@ -2219,7 +2294,7 @@ impl GpuContext {
 - 描画先（深度バッファを含む）はサーフェスごとに持ち、大きさ・方式・フォーマットが変わったときに作り直す。作り直した直後は TAA の履歴を使わない
 - TAA のずらしは Halton 列（2, 3）の 8 個を繰り返す（-0.5〜0.5 ピクセル）。`view_projection` だけに加え、2D のカメラにも加える
 - 履歴は `Rgba16Float` で 2 枚を交互に使う。深度は合成の後に、次のフレーム用へコピーする
-- 前のフレームのカメラは、前のフレームに送った値を CPU 側に残しておき、そのまま送る
+- 前のフレームのカメラは、前のフレームに送った値を CPU 側に残しておき、そのまま送る（`DrawManager*` × サーフェスごと、§11 同じ DrawManager* を複数のサーフェスに描く）
 - 前のフレームのインスタンスは、TAA を使うサーフェスがあるフレームだけ、転送の前にインスタンスのヒープ全体を GPU 上でコピーして作る。そのフレームで確保し直したインスタンスは位置が変わるため、そのフレームだけ前の値が合わない
 - 深度差による信頼度の低下は ×0.25
 

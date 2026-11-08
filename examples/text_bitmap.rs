@@ -9,7 +9,7 @@ mod common;
 
 use lonas::lonas::{
     Blend, Camera2D, Color, CullMode, DrawManager2D, FontFamily, Formatted, GlyphMethod, GpuContext, Hinting, Instance2D,
-    LineHeight, MemoryUpdateType, Object2D, ResourceManager, SurfaceDraw, SurfaceId, TextAlign, TextLayout, TextStyle, TextWrite,
+    LineHeight, MemoryUpdateType, Object2D, ResourceManager, DrawView, SurfaceDraw, SurfaceId, TextAlign, TextLayout, TextStyle, TextWrite,
     Vector2f, Vector3f, VertexLayout, YAxis, write_text,
 };
 use lonas::wgsl::{Dimension, text_shader};
@@ -133,11 +133,11 @@ impl State {
         self.vector.end(&mut self.vector_manager);
 
         self.gpu
-            .end_frame(&mut self.resources, &mut [SurfaceDraw {
+            .end_frame(&mut self.resources, &[SurfaceDraw {
                 surface: self.surface,
                 clear_color: Some(Color::rgb(0.1, 0.1, 0.12)),
-                draw_managers: &mut [&mut self.bitmap_manager, &mut self.vector_manager],
-            }])
+                views: &[DrawView::new(&self.bitmap_manager), DrawView::new(&self.vector_manager)],
+            }], &mut [&mut self.bitmap_manager, &mut self.vector_manager])
             .expect("GPU のデバイスが失われました");
     }
 }
