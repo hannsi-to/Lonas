@@ -14,7 +14,7 @@ mod common;
 
 use lonas::lonas::{
     Camera2D, Color, CullMode, DrawManager2D, GpuContext, Instance2D, JointType, MemoryUpdateType, Object2D, PaintType,
-    ResourceManager, SurfaceDraw, SurfaceId, Vector2f, Vertex, VertexLayout, wgsl,
+    ResourceManager, DrawView, SurfaceDraw, SurfaceId, Vector2f, Vertex, VertexLayout, wgsl,
 };
 use lonas::util_2d::circle::{build_circle, build_circle_other_colors, CircleData};
 use lonas::util_2d::polygon_rounded::build_polygon_rounded;
@@ -137,11 +137,11 @@ impl State {
             object.end(&mut self.manager_2d);
         }
 
-        self.gpu.end_frame(&mut self.resources, &mut [SurfaceDraw {
+        self.gpu.end_frame(&mut self.resources, &[SurfaceDraw {
             surface: self.surface,
             clear_color: Some(Color::rgb(0.1, 0.1, 0.12)),
-            draw_managers: &mut [&mut self.manager_2d],
-        }])
+            views: &[DrawView::new(&self.manager_2d)],
+        }], &mut [&mut self.manager_2d])
             .expect("GPU のデバイスが失われました"); // 作り直す例は test1.rs（§12 デバイスの喪失）
     }
 }

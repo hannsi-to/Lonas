@@ -6,6 +6,7 @@ use crate::color::Color;
 use crate::config::{Blend, CullMode, LonasConfig};
 use crate::config::tests::sample_config;
 use crate::draw::{Camera2D, DrawManager2D, HeapRequest};
+use crate::draw::DrawView;
 use crate::gpu::{GpuContext, SurfaceDraw, SurfaceId};
 use crate::instance::Instance2D;
 use crate::math::{Vector2f, Vector3f};
@@ -76,7 +77,7 @@ fn text_object(gpu: &GpuContext) -> Object2D {
 }
 
 fn end_frame(gpu: &mut GpuContext, surface: SurfaceId, resources: &mut ResourceManager, manager: &mut DrawManager2D) {
-    gpu.end_frame(resources, &mut [SurfaceDraw { surface, clear_color: None, draw_managers: &mut [manager] }]).unwrap();
+    gpu.end_frame(resources, &[SurfaceDraw { surface, clear_color: None, views: &[DrawView::new(&*manager)] }], &mut [manager]).unwrap();
 }
 
 // 書き込んだ三角形の符号付き面積
@@ -374,7 +375,7 @@ fn text_shader_draws_glyphs_and_boxes_with_back_face_culling() {
     object.begin();
     write_text(&mut object, &mut resources, &layout, &TextWrite { position: Vector3f::ZERO, ..text_write(YAxis::Down) });
     object.end(&mut manager);
-    gpu.end_frame(&mut resources, &mut [SurfaceDraw { surface, clear_color: Some(Color::BLACK), draw_managers: &mut [&mut manager] }])
+    gpu.end_frame(&mut resources, &[SurfaceDraw { surface, clear_color: Some(Color::BLACK), views: &[DrawView::new(&manager)] }], &mut [&mut manager])
         .unwrap();
     let pixels = gpu.read_pixels(surface);
     let at = |x: f32, y: f32| pixels[(y as u32 * SIZE + x as u32) as usize];
@@ -419,7 +420,7 @@ fn shadow_is_drawn_behind_and_ghost_needs_alpha_blending() {
         object.begin();
         write_text(&mut object, &mut resources, &layout, &TextWrite { position: Vector3f::ZERO, ..text_write(YAxis::Down) });
         object.end(&mut manager);
-        gpu.end_frame(&mut resources, &mut [SurfaceDraw { surface, clear_color: Some(Color::BLACK), draw_managers: &mut [&mut manager] }])
+        gpu.end_frame(&mut resources, &[SurfaceDraw { surface, clear_color: Some(Color::BLACK), views: &[DrawView::new(&manager)] }], &mut [&mut manager])
             .unwrap();
         let pixels = gpu.read_pixels(surface);
         // ベースラインの少し上の 1 行の rgb

@@ -3,6 +3,7 @@
 
 pub(crate) mod camera;
 pub(crate) mod staging;
+pub(crate) mod view;
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -12,10 +13,12 @@ pub use camera::{Camera2D, Camera3D, CameraId, ProjectionMode};
 pub(crate) use camera::GpuCamera;
 use camera::CameraSet;
 use staging::StagingBelt;
+pub use view::{DrawView, DrawViewBuilder, ViewCameraType};
+use view::{Crop, ViewCamera};
 
 use crate::config::{Blend, CoordinateSystemConfig, CullMode};
 use crate::math::{Matrix4f, Vector2f, Vector3f};
-use crate::gpu::{GpuContext, sealed};
+use crate::gpu::{GpuContext, SurfaceId, sealed};
 use crate::memory::{GpuAllocation, ManagerId, MemoryUpdateType};
 use crate::object::instance_slots::ObjectId;
 use crate::resource::{ShaderId, TextureId};
@@ -121,8 +124,9 @@ pub struct DrawManagerCore {
     pub(crate) coordinate_system: CoordinateSystemConfig,
     // 視界の外を省く処理を行うか（2D は LonasConfig::culling_2d、3D は常に行う）
     pub(crate) culling: bool,
-    // GPU に送るためのバッファ（render が作り、使い回す）
-    pub(crate) resources: Option<crate::render::frame::DrawResources>,
+    // GPU に送るためのバッファ（render が作り、使い回す）。カメラと視界の判定の結果はサーフェスごとに違うため、
+    // サーフェスごとに持つ（§11 同じ DrawManager* を複数のサーフェスに描く）。値は最後に使ったフレーム
+    pub(crate) resources: HashMap<SurfaceId, (crate::render::frame::DrawResources, u64)>,
     pub(crate) layout: VertexLayout,
     pub(crate) defaults: ObjectDefaults,
     pub(crate) staging: StagingBelt,
@@ -161,7 +165,7 @@ impl DrawManagerCore {
             dimension,
             coordinate_system,
             culling,
-            resources: None,
+            resources: HashMap::new(),
             layout,
             defaults,
             staging,
@@ -269,6 +273,25 @@ impl DrawManagerCore {
         self.scratch = padded;
     }
 
+    // そのサーフェスに描くためのバッファ。なければ作る
+    pub(crate) fn surface_resources(&mut self, device: &wgpu::Device, surface: SurfaceId, frame: u64) -> &mut crate::render::frame::DrawResources {
+        let entry = self.resources.entry(surface).or_insert_with(|| (crate::render::frame::DrawResources::new(device), frame));
+        entry.1 = frame;
+        &mut entry.0
+    }
+
+    // unused_frames のフレーム数だけ描かなかったサーフェスのバッファを捨てる（取り除いたサーフェスもこれで消える）
+    pub(crate) fn collect_unused_resources(&mut self, frame: u64, unused_frames: u32) {
+        self.resources.retain(|_, (_, last)| frame.saturating_sub(*last) <= unused_frames as u64);
+    }
+
+    // テストで、1 つのサーフェスにだけ描いた場合のバッファを取り出す
+    #[cfg(test)]
+    pub(crate) fn single_resources(&self) -> &crate::render::frame::DrawResources {
+        assert_eq!(self.resources.len(), 1, "サーフェスごとのバッファが 1 つではありません");
+        &self.resources.values().next().unwrap().0
+    }
+
     // end_frame で処理した後に、コマンドと要求を消す
     pub(crate) fn finish_frame(&mut self) {
         self.heap_requests.clear();
@@ -325,6 +348,30 @@ macro_rules! draw_manager {
             pub fn vertex_layout(&self) -> VertexLayout {
                 self.core.layout
             }
+
+            // サーフェスごとにカメラを差し替える・切り取るための DrawView を作る（§11 同じ DrawManager* を複数のサーフェスに描く）
+            pub fn view(&self) -> DrawViewBuilder<$camera> {
+                DrawViewBuilder::new(DrawView::new(self))
+            }
+
+            // DrawView を通したときのビュー・プロジェクション行列（差し替えと切り取りを含む。ジッターは含まない）
+            pub fn view_projection_in(&self, view: &DrawView, id: CameraId, viewport_size: Vector2f) -> Matrix4f {
+                assert_eq!(view.manager, self.core.id, "別の DrawManager の DrawView です");
+                let camera = self.view_camera(view, id);
+                let frame = self.camera_frame(&camera, viewport_size, Vector2f::ZERO, view.crop);
+
+                Matrix4f::from_cols_array(frame.camera.view_projection_no_jitter)
+            }
+
+            // DrawView で差し替えたカメラ。なければ DrawManager* のカメラ
+            fn view_camera(&self, view: &DrawView, id: CameraId) -> $camera {
+                let camera = *self.cameras.get(id);
+
+                match view.camera(id) {
+                    Some(override_camera) => Self::unwrap_view_camera(override_camera),
+                    None => camera,
+                }
+            }
         }
 
         impl sealed::Sealed for $name {
@@ -332,8 +379,19 @@ macro_rules! draw_manager {
                 &mut self.core
             }
 
-            fn camera_frames(&self, viewport_size: Vector2f, jitter: Vector2f) -> Vec<Option<CameraFrame>> {
-                self.cameras.slots().map(|camera| camera.map(|camera| self.camera_frame(camera, viewport_size, jitter))).collect()
+            fn core_ref(&self) -> &DrawManagerCore {
+                &self.core
+            }
+
+            fn camera_frames(&self, viewport_size: Vector2f, jitter: Vector2f, view: &DrawView) -> Vec<Option<CameraFrame>> {
+                let mut cameras: Vec<Option<$camera>> = self.cameras.slots().map(|camera| camera.copied()).collect();
+
+                // 削除済みの CameraId の差し替えは panic（§9 誤用時は panic）
+                for &(id, camera) in &view.cameras {
+                    cameras[self.cameras.slot(id) as usize] = Some(Self::unwrap_view_camera(camera));
+                }
+
+                cameras.iter().map(|camera| camera.map(|camera| self.camera_frame(&camera, viewport_size, jitter, view.crop))).collect()
             }
 
             fn camera_slot(&self, id: CameraId) -> u32 {
@@ -349,6 +407,13 @@ draw_manager!(DrawManager2D, Camera2D, Dimension::Two);
 draw_manager!(DrawManager3D, Camera3D, Dimension::Three);
 
 impl DrawManager2D {
+    fn unwrap_view_camera(camera: ViewCamera) -> Camera2D {
+        match camera {
+            ViewCamera::Two(camera) => camera,
+            ViewCamera::Three(_) => unreachable!("DrawViewBuilder<Camera2D> は Camera2D だけを受け取る"),
+        }
+    }
+
     // 描く大きさ（ピクセル）を渡して、ビュー・プロジェクション行列を求める。マウス位置の逆変換など（§11 Camera）
     pub fn view_projection(&self, id: CameraId, viewport_size: Vector2f) -> Matrix4f {
         let camera = self.cameras.get(id);
@@ -356,8 +421,13 @@ impl DrawManager2D {
         Camera2D::projection(self.core.coordinate_system.origin_2d, viewport_size) * camera.view()
     }
 
-    fn camera_frame(&self, camera: &Camera2D, viewport_size: Vector2f, jitter: Vector2f) -> CameraFrame {
-        let projection = Camera2D::projection(self.core.coordinate_system.origin_2d, viewport_size);
+    fn camera_frame(&self, camera: &Camera2D, viewport_size: Vector2f, jitter: Vector2f, crop: Option<Crop>) -> CameraFrame {
+        let origin = self.core.coordinate_system.origin_2d;
+        // 切り取る場合は、全体の大きさで投影を作ってから範囲を切り出す
+        let projection = match crop {
+            Some(crop) => crop.matrix() * Camera2D::projection(origin, crop.full_size),
+            None => Camera2D::projection(origin, viewport_size),
+        };
 
         CameraFrame {
             camera: GpuCamera::new(camera.view(), projection, camera.position.extend(0.0), viewport_size, jitter),
@@ -367,6 +437,13 @@ impl DrawManager2D {
 }
 
 impl DrawManager3D {
+    fn unwrap_view_camera(camera: ViewCamera) -> Camera3D {
+        match camera {
+            ViewCamera::Three(camera) => camera,
+            ViewCamera::Two(_) => unreachable!("DrawViewBuilder<Camera3D> は Camera3D だけを受け取る"),
+        }
+    }
+
     pub fn view_projection(&self, id: CameraId, viewport_size: Vector2f) -> Matrix4f {
         let camera = self.cameras.get(id);
 
@@ -381,8 +458,12 @@ impl DrawManager3D {
         self.cameras.get_mut(id).look_at(target, up, handedness);
     }
 
-    fn camera_frame(&self, camera: &Camera3D, viewport_size: Vector2f, jitter: Vector2f) -> CameraFrame {
-        let projection = camera.projection(self.core.coordinate_system.handedness_3d, viewport_size);
+    fn camera_frame(&self, camera: &Camera3D, viewport_size: Vector2f, jitter: Vector2f, crop: Option<Crop>) -> CameraFrame {
+        let handedness = self.core.coordinate_system.handedness_3d;
+        let projection = match crop {
+            Some(crop) => crop.matrix() * camera.projection(handedness, crop.full_size),
+            None => camera.projection(handedness, viewport_size),
+        };
 
         CameraFrame {
             camera: GpuCamera::new(camera.view(), projection, camera.position, viewport_size, jitter),

@@ -6,7 +6,7 @@ pub(crate) mod frame;
 pub(crate) mod heap;
 mod surface;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -16,7 +16,7 @@ use crate::config::{AlphaMode, AntiAliasing, Backend, LonasConfig, PresentMode};
 use crate::error::LonasError;
 use crate::math::Vector2f;
 use crate::resource::ResourceManager;
-use crate::draw::{Dimension, DrawManagerCore};
+use crate::draw::{Dimension, DrawManagerCore, DrawView};
 use crate::render::{self, Renderer, TargetFormat};
 use crate::slots::Slots;
 use crate::{color::Color, memory::ManagerId};
@@ -31,20 +31,26 @@ pub trait DrawManager: sealed::Sealed {}
 pub(crate) mod sealed {
     pub trait Sealed {
         fn core(&mut self) -> &mut crate::draw::DrawManagerCore;
-        // 描くサーフェスの大きさから求めた、カメラの番号ごとの値
+        fn core_ref(&self) -> &crate::draw::DrawManagerCore;
+        // 描くサーフェスの大きさから求めた、カメラの番号ごとの値。view で差し替えたカメラと切り取りを使う
         // jitter は TAA のカメラのずらし（ピクセル）。TAA 以外は 0
-        fn camera_frames(&self, viewport_size: crate::math::Vector2f, jitter: crate::math::Vector2f) -> Vec<Option<crate::draw::CameraFrame>>;
+        fn camera_frames(
+            &self,
+            viewport_size: crate::math::Vector2f,
+            jitter: crate::math::Vector2f,
+            view: &crate::draw::DrawView,
+        ) -> Vec<Option<crate::draw::CameraFrame>>;
         fn camera_slot(&self, id: crate::draw::CameraId) -> u32;
     }
 }
 
 // サーフェスごとの描画（§9・§11 複数ウィンドウ）
-pub struct SurfaceDraw<'a, 'b> {
+pub struct SurfaceDraw<'a> {
     pub surface: SurfaceId,
     // None ならクリアしない（§10 深度バッファとクリア）
     pub clear_color: Option<Color>,
-    // 渡した順に描画する
-    pub draw_managers: &'a mut [&'b mut dyn DrawManager],
+    // 渡した順に描画する。DrawManager* の実体は end_frame の draw_managers に渡す（§11 同じ DrawManager* を複数のサーフェスに描く）
+    pub views: &'a [DrawView],
 }
 
 // SurfaceId の発行元を区別するための番号（ResourceManager と同じ考え方、§11 ID）
@@ -270,7 +276,15 @@ impl GpuContext {
 
     // §9 の end_frame の処理の順に行う
     // デバイスが失われていたら GPU の処理をせずに Err(DeviceLost) を返す。以降のフレームも毎回返す（§12 デバイスの喪失）
-    pub fn end_frame(&mut self, resource_manager: &mut ResourceManager, surfaces: &mut [SurfaceDraw<'_, '_>]) -> Result<(), LonasError> {
+    // draw_managers には、そのフレームで使う DrawManager* を 1 回ずつ渡す。surfaces の DrawView がそれを指す
+    // （§11 同じ DrawManager* を複数のサーフェスに描く）。ヒープの処理と uniform の転送は DrawManager* ごとに 1 回、
+    // カメラ・Compute・描画は DrawView ごとに行う
+    pub fn end_frame(
+        &mut self,
+        resource_manager: &mut ResourceManager,
+        surfaces: &[SurfaceDraw<'_>],
+        draw_managers: &mut [&mut dyn DrawManager],
+    ) -> Result<(), LonasError> {
         let state = self.frame.state();
 
         if !state.in_frame {
@@ -284,12 +298,28 @@ impl GpuContext {
             self.check_surface(draw.surface);
             assert!(
                 seen.insert(draw.surface),
-                "同じサーフェスが end_frame に 2 回以上渡されました。1 つの SurfaceDraw の draw_managers に並べてください",
+                "同じサーフェスが end_frame に 2 回以上渡されました。1 つの SurfaceDraw の views に並べてください",
             );
         }
 
+        // DrawManager* は 1 回ずつ。DrawView が指す DrawManager* は draw_managers にあること（§9 誤用時は panic）
+        let mut index_of: HashMap<ManagerId, usize> = HashMap::new();
+
+        for (index, manager) in draw_managers.iter().enumerate() {
+            assert!(index_of.insert(manager.core_ref().id, index).is_none(), "同じ DrawManager が end_frame の draw_managers に 2 回以上渡されました");
+        }
+
+        for draw in surfaces {
+            let mut in_surface = HashSet::new();
+
+            for view in draw.views {
+                assert!(index_of.contains_key(&view.manager), "DrawView が指す DrawManager が end_frame の draw_managers に渡されていません");
+                assert!(in_surface.insert(view.manager), "1 つのサーフェスの views に、同じ DrawManager の DrawView が 2 つ以上あります");
+            }
+        }
+
         if let Err(error) = self.check_device() {
-            self.abandon_frame(surfaces);
+            self.abandon_frame(draw_managers);
             return Err(error);
         }
 
@@ -297,8 +327,7 @@ impl GpuContext {
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Lonas frame") });
 
         {
-            let mut managers: Vec<&mut DrawManagerCore> =
-                surfaces.iter_mut().flat_map(|draw| draw.draw_managers.iter_mut().map(|manager| manager.core())).collect();
+            let mut managers: Vec<&mut DrawManagerCore> = draw_managers.iter_mut().map(|manager| manager.core()).collect();
 
             // 1. 前のフレームの後片付け：map し直しが終わった staging バッファを空きに戻す
             // wgpu 30 の poll の失敗（Timeout / WrongSubmissionIndex）は待つ場合のもので、Poll では起きないはず。起きたら知らせる
@@ -321,13 +350,18 @@ impl GpuContext {
             // 3. ヒープの処理。TAA を使うサーフェスがあれば、インスタンスの前のフレームの値を残す
             let keep_previous = surfaces_use_taa(&self.surfaces, &seen);
             self.heap.process(&self.device, &mut encoder, &mut managers, frame, keep_previous);
+
+            // 4. uniform：DrawManager* ごとに 1 回（何枚のサーフェスに描いても同じ値）
+            for manager in managers.iter() {
+                self.renderer.write_uniforms(&self.device, &mut encoder, manager);
+            }
         }
 
-        // 4. カメラ・5. Compute：DrawManager* ごとに描画の順を決め、引数とインスタンス番号のリストを書かせる
+        // 5. カメラと Compute：DrawView ごとに描画の順を決め、引数とインスタンス番号のリストを書かせる
         let motion_format = self.config.taa.motion_vector_format;
         let mut prepared = Vec::new();
 
-        for draw in surfaces.iter_mut() {
+        for draw in surfaces {
             let surface = self.surface(draw.surface);
             let (width, height) = surface.size();
             let viewport = Vector2f::new(width.max(1) as f32, height.max(1) as f32);
@@ -341,8 +375,9 @@ impl GpuContext {
             let jitter = if anti_aliasing == AntiAliasing::Taa { render::antialiasing::jitter(frame) } else { Vector2f::ZERO };
             let mut per_surface = Vec::new();
 
-            for manager in draw.draw_managers.iter_mut() {
-                let cameras = manager.camera_frames(viewport, jitter);
+            for view in draw.views {
+                let manager = &mut draw_managers[index_of[&view.manager]];
+                let cameras = manager.camera_frames(viewport, jitter, view);
                 let commands = &manager.core().draw_commands;
                 let camera_ids: Vec<_> = commands.iter().map(|command| command.settings.camera).collect();
                 let camera_slots: Vec<u32> = camera_ids.into_iter().map(|id| manager.camera_slot(id)).collect();
@@ -355,6 +390,7 @@ impl GpuContext {
                     &self.heap,
                     resource_manager,
                     core,
+                    draw.surface,
                     &cameras,
                     &camera_slots,
                     target,
@@ -368,7 +404,7 @@ impl GpuContext {
         // 6. 描画（渡されたサーフェスごと）→ アンチエイリアスの後処理
         let mut presented = Vec::new();
 
-        for (draw, per_surface) in surfaces.iter_mut().zip(&prepared) {
+        for (draw, per_surface) in surfaces.iter().zip(&prepared) {
             // end_frame の最初に確かめたため、必ずある
             let surface = self.surfaces.get_mut(draw.surface.0).expect("存在しない SurfaceId です");
             let Some(acquired) = surface.acquire() else { continue };
@@ -382,11 +418,11 @@ impl GpuContext {
             };
             let mut motion_load = wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT);
 
-            // DrawManager* ごとに描画のパスを分ける。3D は各 DrawManager3D の最初に深度をクリアする（§10）
-            let pass_count = draw.draw_managers.len().max(1);
+            // DrawView ごとに描画のパスを分ける。3D は各 DrawManager3D の最初に深度をクリアする（§10）
+            let pass_count = draw.views.len().max(1);
 
             for index in 0..pass_count {
-                let manager = draw.draw_managers.get_mut(index).map(|manager| manager.core());
+                let manager = draw.views.get(index).map(|view| draw_managers[index_of[&view.manager]].core());
                 let pass_targets = targets.pass_targets(&acquired.view);
                 let depth_attachment = match &manager {
                     Some(manager) if manager.dimension == Dimension::Three => Some(wgpu::RenderPassDepthStencilAttachment {
@@ -439,7 +475,7 @@ impl GpuContext {
 
         // フレームの途中で失われた場合は、記録した命令を送らずに捨てる
         if let Err(error) = self.check_device() {
-            self.abandon_frame(surfaces);
+            self.abandon_frame(draw_managers);
             return Err(error);
         }
 
@@ -454,9 +490,10 @@ impl GpuContext {
         self.heap.collect_garbage(frame, self.config.gc_unused_frames);
         self.renderer.collect_unused(frame, self.config.gc_unused_frames);
 
-        for manager in surfaces.iter_mut().flat_map(|draw| draw.draw_managers.iter_mut().map(|manager| manager.core())) {
+        for manager in draw_managers.iter_mut().map(|manager| manager.core()) {
             manager.staging.recall();
             manager.finish_frame();
+            manager.collect_unused_resources(frame, self.config.gc_unused_frames);
             manager.receive_reclaimed(self.heap.take_reclaimed(manager.id));
 
             for (kind, handle) in manager.take_dropped() {
@@ -477,8 +514,8 @@ impl GpuContext {
     }
 
     // デバイスが失われたフレームを終える。GPU には触れず、次の begin_frame と Object* の end が使える状態にだけ戻す
-    fn abandon_frame(&mut self, surfaces: &mut [SurfaceDraw<'_, '_>]) {
-        for manager in surfaces.iter_mut().flat_map(|draw| draw.draw_managers.iter_mut().map(|manager| manager.core())) {
+    fn abandon_frame(&mut self, draw_managers: &mut [&mut dyn DrawManager]) {
+        for manager in draw_managers.iter_mut().map(|manager| manager.core()) {
             manager.finish_frame();
         }
 
@@ -660,7 +697,7 @@ mod tests {
         for frame in 1..=3 {
             gpu.begin_frame();
             assert_eq!(gpu.frame.state().number, frame);
-            gpu.end_frame(&mut resources, &mut []).unwrap();
+            gpu.end_frame(&mut resources, &[], &mut []).unwrap();
         }
     }
 
@@ -672,8 +709,8 @@ mod tests {
         error.downcast_ref::<String>().cloned().or_else(|| error.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default()
     }
 
-    fn draw(surface: SurfaceId) -> SurfaceDraw<'static, 'static> {
-        SurfaceDraw { surface, clear_color: Some(Color::new(1.0, 0.0, 0.0, 1.0)), draw_managers: &mut [] }
+    fn draw(surface: SurfaceId) -> SurfaceDraw<'static> {
+        SurfaceDraw { surface, clear_color: Some(Color::new(1.0, 0.0, 0.0, 1.0)), views: &[] }
     }
 
     #[test]
@@ -688,7 +725,7 @@ mod tests {
         assert!(panic_message(|| gpu.remove_surface(other)).contains("別の GpuContext"));
 
         gpu.begin_frame();
-        assert!(panic_message(|| { let _ = gpu.end_frame(&mut resources, &mut [draw(other)]); }).contains("別の GpuContext"));
+        assert!(panic_message(|| { let _ = gpu.end_frame(&mut resources, &[draw(other)], &mut []); }).contains("別の GpuContext"));
     }
 
     #[test]
@@ -707,11 +744,11 @@ mod tests {
         assert_eq!(gpu.surface_size(new), Vector2f::new(8.0, 8.0));
 
         gpu.begin_frame();
-        gpu.end_frame(&mut resources, &mut [draw(new)]).unwrap();
+        gpu.end_frame(&mut resources, &[draw(new)], &mut []).unwrap();
         assert!(gpu.read_pixels(new).iter().all(|&pixel| pixel == [255, 0, 0, 255]));
 
         gpu.begin_frame();
-        assert!(panic_message(|| { let _ = gpu.end_frame(&mut resources, &mut [draw(old)]); }).contains("削除済み"));
+        assert!(panic_message(|| { let _ = gpu.end_frame(&mut resources, &[draw(old)], &mut []); }).contains("削除済み"));
     }
 
     #[test]
@@ -721,15 +758,15 @@ mod tests {
         let surface = gpu.add_offscreen(4, 4);
 
         gpu.begin_frame();
-        gpu.end_frame(&mut resources, &mut [draw(surface)]).unwrap();
+        gpu.end_frame(&mut resources, &[draw(surface)], &mut []).unwrap();
         gpu.simulate_device_lost("テストで失わせた");
 
         // 一度だけでなく、以降のフレームも毎回 Err を返す。begin_frame はそのまま使える
         for _ in 0..2 {
             gpu.begin_frame();
-            let green = SurfaceDraw { surface, clear_color: Some(Color::new(0.0, 1.0, 0.0, 1.0)), draw_managers: &mut [] };
+            let green = SurfaceDraw { surface, clear_color: Some(Color::new(0.0, 1.0, 0.0, 1.0)), views: &[] };
 
-            match gpu.end_frame(&mut resources, &mut [green]) {
+            match gpu.end_frame(&mut resources, &[green], &mut []) {
                 Err(LonasError::DeviceLost { reason }) => assert_eq!(reason, "テストで失わせた"),
                 other => panic!("DeviceLost になりませんでした: {other:?}"),
             }

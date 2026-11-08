@@ -5,7 +5,7 @@ use lonas::lonas::{
     AlphaMode, AntiAliasing, Backend, BindingConfig, BindingSlot, Blend, Camera2D, Camera3D, Color, CoordinateSystemConfig, CullMode,
     DrawManager2D, DrawManager3D, FilterMode, GlyphAtlasConfig, GpuContext, Handedness, Instance2D, Instance3D, InstanceId,
     LonasConfig, LonasError, Matrix4f, MemoryCapacity, MemoryConfig, MemoryUpdateType, MotionVectorFormat, Object2D,
-    Object3D, Origin2D, PresentMode, ProjectionMode, Quaternion, ResourceConfig, ResourceManager, ShaderId, SurfaceDraw,
+    Object3D, Origin2D, PresentMode, ProjectionMode, Quaternion, ResourceConfig, ResourceManager, ShaderId, DrawView, SurfaceDraw,
     SurfaceId, TaaConfig, TextConfig, TextureAtlasConfig, TextureId, PaintType, Vector2f, Vector3f, Vertex, VertexLayout, Visibility,
 };
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -443,11 +443,11 @@ impl TestApplication {
         self.floor.end(&mut self.draw_manager_3d);
 
         // サーフェスごとに、渡した順に描画する（3D → 2D、§9）
-        self.gpu.end_frame(&mut self.resource_manager, &mut [SurfaceDraw {
+        self.gpu.end_frame(&mut self.resource_manager, &[SurfaceDraw {
             surface: self.main_surface,
             clear_color: Some(Color::new(0.1, 0.1, 0.12, 1.0)),
-            draw_managers: &mut [&mut self.draw_manager_3d, &mut self.draw_manager_2d],
-        }])
+            views: &[DrawView::new(&self.draw_manager_3d), DrawView::new(&self.draw_manager_2d)],
+        }], &mut [&mut self.draw_manager_3d, &mut self.draw_manager_2d])
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {

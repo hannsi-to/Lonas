@@ -6,6 +6,7 @@ use crate::color::Color;
 use crate::config::tests::sample_config;
 use crate::config::{Blend, CullMode, LonasConfig};
 use crate::draw::{Camera2D, DrawManager2D, HeapRequest};
+use crate::draw::DrawView;
 use crate::gpu::{GpuContext, SurfaceDraw, SurfaceId};
 use crate::instance::Instance2D;
 use crate::math::{Vector2f, Vector3f};
@@ -89,7 +90,7 @@ fn draw(scene: &mut Scene, objects: &mut [(&mut Object2D, &TextLayout)], positio
 
     scene
         .gpu
-        .end_frame(&mut scene.resources, &mut [SurfaceDraw { surface: scene.surface, clear_color: Some(Color::BLACK), draw_managers: &mut [&mut scene.manager] }])
+        .end_frame(&mut scene.resources, &[SurfaceDraw { surface: scene.surface, clear_color: Some(Color::BLACK), views: &[DrawView::new(&scene.manager)] }], &mut [&mut scene.manager])
         .unwrap();
 
     scene.gpu.read_pixels(scene.surface)
@@ -216,7 +217,7 @@ fn evicted_glyph_is_placed_again_without_rewriting_vertices() {
         .count();
     scene
         .gpu
-        .end_frame(&mut scene.resources, &mut [SurfaceDraw { surface: scene.surface, clear_color: Some(Color::BLACK), draw_managers: &mut [&mut scene.manager] }])
+        .end_frame(&mut scene.resources, &[SurfaceDraw { surface: scene.surface, clear_color: Some(Color::BLACK), views: &[DrawView::new(&scene.manager)] }], &mut [&mut scene.manager])
         .unwrap();
     let after = scene.gpu.read_pixels(scene.surface);
 

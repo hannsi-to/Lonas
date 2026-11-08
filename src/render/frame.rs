@@ -323,7 +323,7 @@ pub(crate) struct DrawResources {
     pub params: GrowBuffer,
     // 前のフレームのカメラ（TAA の動きのベクトル用、§11 シェーダーとの約束事）
     pub previous_cameras: GrowBuffer,
-    last_camera_bytes: Vec<u8>,
+    pub(crate) last_camera_bytes: Vec<u8>,
     // テストで、そのフレームのまとまり（引数の先頭と数）を確かめる
     #[cfg(test)]
     pub last_batches: Vec<(u32, u32)>,
