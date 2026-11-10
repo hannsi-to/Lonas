@@ -5,12 +5,34 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::ops::Range;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::instance::{Instance2D, Instance3D, Visibility};
 
-// Object* の識別子（InstanceId の発行元の検査に使う、§2）
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct ObjectId(pub u64);
+// Object* の識別子（§2 Object* の識別子）。InstanceId の発行元の検査にも使う
+// プロセス全体で 1 つの数から配り、使い回さない。crate の外からは作れない（数は get で読める）
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ObjectId(u64);
+
+static NEXT_OBJECT_ID: AtomicU64 = AtomicU64::new(0);
+
+impl ObjectId {
+    // Object*::new で呼ぶ。&GpuContext に依らず、別の GpuContext の Object* とも重ならない
+    pub(crate) fn issue() -> Self {
+        Self(NEXT_OBJECT_ID.fetch_add(1, Ordering::Relaxed))
+    }
+
+    // ログや別の言語へ渡すための数。この数から ObjectId には戻せない
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl fmt::Display for ObjectId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Object#{}", self.0)
+    }
+}
 
 // インスタンスの型（Instance2D / Instance3D）を型引数に持つ。Object2D の ID を Object3D に渡すとコンパイルエラー（§11 インスタンス API）
 pub struct InstanceId<I> {
@@ -41,6 +63,13 @@ impl<I> Eq for InstanceId<I> {}
 impl<I> Hash for InstanceId<I> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         (self.slot, self.generation, self.owner).hash(state);
+    }
+}
+
+impl<I> InstanceId<I> {
+    // このインスタンスを持つ Object* の識別子
+    pub fn object(&self) -> ObjectId {
+        self.owner
     }
 }
 
@@ -275,6 +304,34 @@ mod tests {
 
         second.add(instance(1.0));
         second.update(id, instance(2.0));
+    }
+
+    // 配った番号は重ならず、後から配った物ほど大きい（§2 Object* の識別子）
+    #[test]
+    fn issued_object_ids_are_unique_and_increasing() {
+        let ids: Vec<_> = (0..100).map(|_| ObjectId::issue()).collect();
+
+        for pair in ids.windows(2) {
+            assert!(pair[0] < pair[1]);
+        }
+        assert_eq!(ids.iter().collect::<std::collections::HashSet<_>>().len(), ids.len());
+    }
+
+    #[test]
+    fn object_id_reads_as_number_and_displays() {
+        let id = ObjectId(12);
+
+        assert_eq!(id.get(), 12);
+        assert_eq!(id.to_string(), "Object#12");
+    }
+
+    #[test]
+    fn instance_id_knows_its_object() {
+        let owner = ObjectId(7);
+        let mut slots = InstanceSlots::new(owner);
+        let id = slots.add(instance(1.0));
+
+        assert_eq!(id.object(), owner);
     }
 
     #[test]

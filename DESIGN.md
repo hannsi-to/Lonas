@@ -124,10 +124,37 @@ rock.vertex(...); ...
 rock.end(&mut dm3d);  // そのフレームで begin していなければ panic
 ```
 
-- `new` で `GpuContext` からフレーム番号の `Arc<AtomicU64>`（§9）の複製と、`Object*` の識別子（`InstanceId` の検査に使う、§7）を受け取る。`&GpuContext` で済むよう、識別子は `GpuContext` の中のアトミックな数で発行する
+- `new` で `GpuContext` からフレーム番号の `Arc<AtomicU64>`（§9）の複製を受け取り、`Object*` の識別子（`ObjectId`、下の「Object* の識別子」）を配られる
 - `begin` は引数を取らないが、受け取ったフレーム番号で判定できる
 - 却下案：`Object2D::new()` を引数なしにし、フラグだけで判定する（「`begin` だけして `end` しなかった」次のフレームの `begin` が 2 回目と区別できず、§2 の表どおりに判定できない）
 - 動かない物体でも毎フレーム頂点を書く。書いた値は前フレームの値と比べるだけで、変わらなければ転送しない（§1）
+
+### Object* の識別子
+
+**決定：`Object*` の識別子 `ObjectId` を公開する。`Object2D::id()` / `Object3D::id()` で読み、`HashMap` のキーや比べる値に使える。外からは作れない。**
+
+```rust
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ObjectId(u64);            // 中の数は crate の外から見えない
+
+impl ObjectId {
+    pub fn get(self) -> u64;         // ログや別の言語（Aevon の C# スクリプト）へ渡すための数。この数から ObjectId には戻せない
+}
+impl Display for ObjectId { .. }     // "Object#12"
+
+impl Object2D { pub fn id(&self) -> ObjectId; }   // Object3D も同じ
+impl<I> InstanceId<I> { pub fn object(&self) -> ObjectId; }   // このインスタンスを持つ Object*（§7）
+pub trait TextObject { fn id(&self) -> ObjectId; }            // Object*::id と同じ（§13）
+```
+
+- `use lonas::lonas::ObjectId` で使う
+- **`new` の時に、プロセス全体で 1 つのアトミックな数（`static`）から配る。**別の `GpuContext` の `Object*` とも重ならない（`GpuContext` / `ResourceManager` の識別子と同じ考え方、§11 ID）。`&GpuContext` には依らない
+- 配った番号は **使い回さない**。`drop` した `Object*` の番号を、後から作った `Object*` が持つことはない。`u64` のため、使い切ることは考えない
+- `drop` するまで変わらない。`begin` / `end` や設定の変更、GC の回収（§6）では変わらない
+- 順序（`Ord`）は配った順。後から作った `Object*` ほど大きい
+- 外から作れないため、存在しない番号の `ObjectId` は作れない（`get` の数を比べたり保存したりはできる）
+- 却下案：中の `u64` を公開する / 数から作る関数を足す（偽の番号・存在しない番号を作れてしまう）
+- 却下案：`GpuContext` ごとの数で配る（以前の形。`GpuContext` を 2 つ作ると同じ番号が配られ、`InstanceId` の `owner` の検査もすり抜ける）
 
 ### end 時の更新条件
 
@@ -748,7 +775,7 @@ impl Object2D { // Object3D も同じ（Instance3D を受け取る）
 pub struct InstanceId<I> {         // I = Instance2D / Instance3D
     slot: u32,
     generation: u32,
-    owner: ObjectId,                  // 発行元の Object* の識別子。別の Object* の InstanceId を検知する（§11）
+    owner: ObjectId,                  // 発行元の Object* の識別子。別の Object* の InstanceId を検知する（§11）。object() で読める（§2 Object* の識別子）
     _marker: PhantomData<fn() -> I>,  // I の性質によらず Copy / Send にするため fn() -> I
 }
 
@@ -1532,6 +1559,7 @@ pub enum Visibility {
 - 存在しない / 別の `Object*` の `InstanceId` を `update_instance` / `remove_instance` に渡した場合は **panic**
 - **決定：`InstanceId` はインスタンスの型を型引数に持つ（`InstanceId<Instance2D>` / `InstanceId<Instance3D>`）。**`Object2D` の ID を `Object3D` に渡すと **コンパイルエラー** になる
   - 同じ型の別の `Object*` の ID（例：`Object2D` 同士）は型では区別できないため、これまでどおり `owner` で実行時に検査して panic する
+- `InstanceId::object()` で、そのインスタンスを持つ `Object*` の `ObjectId` を読める（§2 Object* の識別子）
   - 却下案：寿命で `Object*` ごとに印を付ける（GhostCell と同じ手法。`Object*` をクロージャの外に出せなくなり、構造体に持たせられない）
   - 却下案：ユーザーが印の型を付ける（`Object2D<Player>`）。同じ印の `Object*` 同士は区別できず実行時の検査が残るうえ、型の表記が長くなる。既定値付きの型引数（`Object2D<M = ()>`）で後から足せるため、今は入れない
 
