@@ -11,7 +11,7 @@ pub use crate::gpu::{DrawManager, GpuContext, SurfaceDraw, SurfaceId};
 pub use crate::instance::{Instance2D, Instance3D, Visibility};
 pub use crate::math::{Matrix4f, Quaternion, Vector2f, Vector3f, Vector4f};
 pub use crate::memory::MemoryUpdateType;
-pub use crate::object::{Dash, InstanceId, JointType, Object2D, Object3D, PaintType};
+pub use crate::object::{Dash, InstanceId, JointType, Object2D, Object3D, ObjectId, PaintType};
 pub use crate::resource::{ResourceConfig, ResourceManager, ShaderId, TextureId};
 #[cfg(feature = "text")]
 pub use crate::resource::FontId;

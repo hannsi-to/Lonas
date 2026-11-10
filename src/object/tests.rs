@@ -385,6 +385,52 @@ fn staging_chunks_are_reused() {
     assert_eq!(active + free + in_flight, total, "GPU が追いついた後にチャンクが増えました");
 }
 
+// Object* の識別子は new の時に配られ、別の GpuContext の Object* とも重ならない（§2 Object* の識別子）
+// テスト用の GpuContext は生きている間ロックを持つため、1 つ目を drop してから 2 つ目を作る
+#[test]
+fn object_ids_are_unique_across_gpu_contexts() {
+    let Some(first) = headless(sample_config()) else { return };
+    let mut a = Object2D::new(&first);
+    let c = Object3D::new(&first);
+    let instance = a.add_instance(Instance2D::default());
+    let (a_id, c_id) = (a.id(), c.id());
+
+    // 描いても変わらない。InstanceId から持ち主が分かる
+    assert_eq!(a.id(), a_id);
+    assert_eq!(instance.object(), a_id);
+    assert_ne!(a_id, c_id);
+    assert!(a_id < c_id);
+
+    // drop しても番号は使い回さない
+    drop(a);
+    drop(c);
+    drop(first);
+
+    let Some(second) = headless(sample_config()) else { return };
+    let b = Object2D::new(&second);
+
+    assert!(b.id() > c_id);
+    assert_ne!(b.id(), a_id);
+    assert_ne!(instance.object(), b.id());
+}
+
+#[cfg(feature = "text")]
+#[test]
+fn text_object_id_matches_object_id() {
+    use crate::text::TextObject;
+
+    fn id_of<T: TextObject>(object: &T) -> ObjectId {
+        object.id()
+    }
+
+    let Some(gpu) = headless(sample_config()) else { return };
+    let object_2d = Object2D::new(&gpu);
+    let object_3d = Object3D::new(&gpu);
+
+    assert_eq!(id_of(&object_2d), object_2d.id());
+    assert_eq!(id_of(&object_3d), object_3d.id());
+}
+
 // get_ の関数は、設定の関数で指定した値と、最後の end の時点の頂点・インデックスを返す（§11 Object の状態の取得）
 #[test]
 fn getters_return_current_state() {

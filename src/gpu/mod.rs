@@ -7,7 +7,7 @@ pub(crate) mod heap;
 mod surface;
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -67,8 +67,6 @@ pub struct GpuContext {
     renderer: Renderer,
     frame: FrameClock,
     next_manager_id: u32,
-    // Object*::new(&gpu) で発行するため、&self で増やせるようにする（§2）
-    next_object_id: AtomicU64,
     // デバイスが失われた理由。wgpu のコールバックが別のスレッドから書き込むことがある（§12 デバイスの喪失）
     device_lost: Arc<Mutex<Option<String>>>,
     // ウィンドウなしの GpuContext が生きている間持つ。device より後に drop するため最後に置く
@@ -210,7 +208,6 @@ impl GpuContext {
             renderer,
             frame: FrameClock::new(),
             next_manager_id: 0,
-            next_object_id: AtomicU64::new(0),
             device_lost,
             #[cfg(test)]
             _gpu_test_lock: None,
@@ -562,10 +559,6 @@ impl GpuContext {
         self.next_manager_id += 1;
 
         ManagerId(self.next_manager_id - 1)
-    }
-
-    pub(crate) fn issue_object_id(&self) -> u64 {
-        self.next_object_id.fetch_add(1, Ordering::Relaxed)
     }
 
     pub(crate) fn frame_clock(&self) -> FrameClock {

@@ -4,7 +4,7 @@
 use crate::color::Color;
 use crate::config::Blend;
 use crate::math::Vector3f;
-use crate::object::{Object2D, Object3D, stroke};
+use crate::object::{Object2D, Object3D, ObjectId, stroke};
 use crate::resource::ResourceManager;
 use crate::text::bitmap::{BitmapKey, Hinting};
 use crate::text::layout::{PlacedGlyph, PlacedLine, TextLayout, TextRow};
@@ -58,10 +58,22 @@ pub struct TextWrite {
 }
 
 // write_text を使える Object*。crate の外から実装できない
-pub trait TextObject: sealed::Target {}
+pub trait TextObject: sealed::Target {
+    // Object2D::id / Object3D::id と同じ（§2 Object* の識別子）
+    fn id(&self) -> ObjectId;
+}
 
-impl TextObject for Object2D {}
-impl TextObject for Object3D {}
+impl TextObject for Object2D {
+    fn id(&self) -> ObjectId {
+        Object2D::id(self)
+    }
+}
+
+impl TextObject for Object3D {
+    fn id(&self) -> ObjectId {
+        Object3D::id(self)
+    }
+}
 
 pub(crate) mod sealed {
     use crate::vertex::Vertex;

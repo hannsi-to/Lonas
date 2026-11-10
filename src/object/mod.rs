@@ -8,7 +8,7 @@ pub(crate) mod stroke;
 mod tests;
 pub(crate) mod paint_type;
 
-pub use instance_slots::InstanceId;
+pub use instance_slots::{InstanceId, ObjectId};
 pub use paint_type::{Dash, JointType, PaintType};
 
 use crate::config::{Blend, CullMode};
@@ -206,6 +206,11 @@ macro_rules! object_common {
             // Stroke の形は線として作った頂点を指す（index() の形がある場合、線の頂点は元の頂点の後ろに並ぶ）
             pub fn get_indices(&self) -> &[u32] {
                 self.core.index_values()
+            }
+
+            // この Object* の識別子。new の時に配られ、drop するまで変わらない（§2 Object* の識別子）
+            pub fn id(&self) -> ObjectId {
+                self.core.id()
             }
         }
     };

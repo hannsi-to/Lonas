@@ -152,7 +152,7 @@ impl<I> Drop for ObjectCore<I> {
 
 impl<I: InstanceData> ObjectCore<I> {
     pub(crate) fn new(gpu: &GpuContext, winding: Winding) -> Self {
-        let id = ObjectId(gpu.issue_object_id());
+        let id = ObjectId::issue();
         let config = gpu.config();
 
         Self {
@@ -205,6 +205,10 @@ impl<I: InstanceData> ObjectCore<I> {
     }
 
     // ---- 毎フレーム呼ばれる関数 ----
+
+    pub(crate) fn id(&self) -> ObjectId {
+        self.id
+    }
 
     pub(crate) fn begin(&mut self) {
         let frame = self.current_frame("begin");
